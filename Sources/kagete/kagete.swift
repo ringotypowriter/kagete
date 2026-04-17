@@ -12,6 +12,10 @@ struct Kagete: AsyncParsableCommand {
             Windows.self,
             Inspect.self,
             Screenshot.self,
+            Click.self,
+            TypeText.self,
+            Key.self,
+            Scroll.self,
         ]
     )
 }
@@ -122,5 +126,128 @@ struct Screenshot: AsyncParsableCommand {
         try await Capture.screenshot(
             pid: resolved.pid, windowFilter: resolved.windowFilter, output: url)
         print(url.path)
+    }
+}
+
+struct Click: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "click",
+        abstract: "Click at a point or on an AX element.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "AX path of the element to click (preferred).")
+    var axPath: String?
+
+    @Option(name: .long, help: "Absolute x coordinate in screen points.")
+    var x: Double?
+
+    @Option(name: .long, help: "Absolute y coordinate in screen points.")
+    var y: Double?
+
+    @Option(name: .long, help: "Mouse button: left (default), right, middle.")
+    var button: String = "left"
+
+    @Option(name: .long, help: "Click count (1 single, 2 double, etc.).")
+    var count: Int = 1
+
+    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before clicking.")
+    var activate: Bool = true
+
+    func run() async throws {
+        guard let mb = MouseButton(rawValue: button.lowercased()) else {
+            throw KageteError.failure("Unknown --button \(button). Use left/right/middle.")
+        }
+
+        let point: CGPoint
+        if let ax = axPath {
+            let resolved = try TargetResolver.resolve(target)
+            if activate { resolved.app.activate() }
+            let el = try AXInspector.locate(
+                pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: ax)
+            guard let center = AXInspector.screenCenter(of: el) else {
+                throw KageteError.failure("Element at \(ax) has no resolvable frame.")
+            }
+            point = center
+        } else if let cx = x, let cy = y {
+            point = CGPoint(x: cx, y: cy)
+        } else {
+            throw KageteError.failure("Provide --ax-path (with --app/--bundle/--pid) or --x/--y.")
+        }
+
+        try Input.click(at: point, button: mb, count: count)
+    }
+}
+
+struct TypeText: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "type",
+        abstract: "Type a string into the focused element.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Argument(help: "Text to type.")
+    var text: String
+
+    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before typing (if one is specified).")
+    var activate: Bool = true
+
+    func run() async throws {
+        if target.app != nil || target.bundle != nil || target.pid != nil {
+            let resolved = try TargetResolver.resolve(target)
+            if activate { resolved.app.activate() }
+        }
+        try Input.type(text)
+    }
+}
+
+struct Key: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "key",
+        abstract: "Send a keyboard combo, e.g. cmd+s, shift+tab, f12.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Argument(help: "Key combo, e.g. \"cmd+shift+4\".")
+    var combo: String
+
+    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before sending (if one is specified).")
+    var activate: Bool = true
+
+    func run() async throws {
+        if target.app != nil || target.bundle != nil || target.pid != nil {
+            let resolved = try TargetResolver.resolve(target)
+            if activate { resolved.app.activate() }
+        }
+        let parsed = try KeyCodes.parse(combo)
+        try Input.key(parsed)
+    }
+}
+
+struct Scroll: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "scroll",
+        abstract: "Scroll the wheel at the current cursor position.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "Horizontal scroll (positive = right).")
+    var dx: Int32 = 0
+
+    @Option(name: .long, help: "Vertical scroll (positive = up, negative = down).")
+    var dy: Int32 = 0
+
+    @Flag(name: .long, help: "Use pixel units instead of line units.")
+    var pixels: Bool = false
+
+    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before scrolling (if one is specified).")
+    var activate: Bool = true
+
+    func run() async throws {
+        if target.app != nil || target.bundle != nil || target.pid != nil {
+            let resolved = try TargetResolver.resolve(target)
+            if activate { resolved.app.activate() }
+        }
+        try Input.scroll(dx: dx, dy: dy, lines: !pixels)
     }
 }

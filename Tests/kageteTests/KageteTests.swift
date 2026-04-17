@@ -36,3 +36,53 @@ import Testing
         #expect(b.height == 400)
     }
 }
+
+@Suite struct KeyCodeTests {
+    @Test func singleLetter() throws {
+        let combo = try KeyCodes.parse("s")
+        #expect(combo.keyCode == 1)
+        #expect(combo.flags == [])
+    }
+
+    @Test func cmdS() throws {
+        let combo = try KeyCodes.parse("cmd+s")
+        #expect(combo.keyCode == 1)
+        #expect(combo.flags.contains(.maskCommand))
+    }
+
+    @Test func cmdShiftFour() throws {
+        let combo = try KeyCodes.parse("cmd+shift+4")
+        #expect(combo.keyCode == 21)
+        #expect(combo.flags.contains(.maskCommand))
+        #expect(combo.flags.contains(.maskShift))
+    }
+
+    @Test func namedKey() throws {
+        let combo = try KeyCodes.parse("return")
+        #expect(combo.keyCode == 36)
+        let esc = try KeyCodes.parse("esc")
+        #expect(esc.keyCode == 53)
+        let f12 = try KeyCodes.parse("f12")
+        #expect(f12.keyCode == 111)
+    }
+
+    @Test func aliasesAgree() throws {
+        let a = try KeyCodes.parse("cmd+s")
+        let b = try KeyCodes.parse("command+s")
+        let c = try KeyCodes.parse("meta+s")
+        #expect(a == b)
+        #expect(b == c)
+    }
+
+    @Test func rejectsUnknownKey() {
+        #expect(throws: KageteError.self) {
+            _ = try KeyCodes.parse("cmd+bogus")
+        }
+    }
+
+    @Test func rejectsMultipleBaseKeys() {
+        #expect(throws: KageteError.self) {
+            _ = try KeyCodes.parse("a+b")
+        }
+    }
+}
