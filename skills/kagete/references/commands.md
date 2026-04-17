@@ -93,19 +93,23 @@ Shaping flags:
 
 ## `kagete screenshot`
 
-Capture a PNG of a window via ScreenCaptureKit (retina-correct).
+Capture a PNG of a window via ScreenCaptureKit with an absolute-coordinate grid overlay (red lines every 200 screen points, labeled with the click-compatible `x=…` / `y=…` values).
 
 ```bash
 kagete screenshot --app TextEdit -o /tmp/shot.png
-kagete screenshot --bundle com.apple.Safari --window "GitHub" -o gh.png
+kagete screenshot --bundle com.apple.Safari --window "GitHub" -o gh.png --scale 1
+kagete screenshot --app Foo -o /tmp/clean.png --clean
 ```
 
 Flags:
 
 - `-o, --output PATH` (required) — destination PNG path
+- `--clean` — skip the grid overlay (use when the grid would obscure inspection)
+- `--grid-pitch N` (default `200`) — grid spacing in screen points; smaller = denser
+- `--scale N` (default `0.5`) — output pixel scale relative to screen points; `1` = native, `2` = retina
 - Standard target flags.
 
-Prints the resolved absolute path on success.
+Prints the resolved absolute path on success. Grid labels match the coordinate system `click --x --y` uses, so an agent can read a value straight off the overlay and pass it to `click`.
 
 ---
 

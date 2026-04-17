@@ -64,13 +64,33 @@ Then tell the user to toggle kagete in System Settings → Privacy & Security �
 
 ## `find` returns nothing but the element is visible
 
-The window probably hasn't finished building its AX tree yet (lazy-loaded views, SwiftUI first render) — or the filter is too strict.
+Two different root causes:
 
-**Fixes, in order:**
+**A. Timing / filter too strict.** The window may not have finished building its AX tree (lazy-loaded views, SwiftUI first render), or the filter keyed on a too-specific attribute.
+
+Fixes, in order:
 
 1. Broaden the filter: `--title-contains` instead of `--title`, drop `--role`
 2. Re-run once after a short delay (up to ~500 ms for SwiftUI cold renders)
-3. Fall back to `inspect --max-depth 8` to see the actual tree and pick a sibling-indexed path
+3. Try alternate attributes: `--value-contains` / `--description-contains`
+4. Fall back to `inspect --max-depth 8` to see the actual tree and pick a sibling-indexed path
+
+**B. Custom-drawn UI — go visual.** Some apps render entire surfaces with custom drawing and never publish the visible text through AX. Confirmed offenders: Tencent apps (QQ Music search results, WeChat message list), Electron apps with aggressive optimization, some game launchers. Diagnostic: `find --value-contains <visible text> --limit 5` returns `[]` for text you can clearly see on screen.
+
+When this happens, switch to the visual path:
+
+```bash
+# Grid-annotated screenshot — labels show absolute screen coords every
+# 200 points, matching what `click --x --y` uses directly.
+kagete screenshot --app "QQ音乐" -o /tmp/view.png
+
+# Read /tmp/view.png, pick the coord off the grid, click.
+kagete click --x 496 --y 375 --count 2
+```
+
+`screenshot` captures at 0.5× by default (~1 MB PNG for a typical window). Pass `--scale 1` for native resolution, `--clean` to drop the grid overlay, `--grid-pitch 100` for denser labeling when targeting small UI.
+
+> Use **negative-coord syntax** — arg parser needs `--x=-1200` with the `=`, not `--x -1200`.
 
 ## `drag` doesn't trigger the drop target
 

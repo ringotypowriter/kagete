@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import ArgumentParser
 import Foundation
@@ -193,18 +194,37 @@ struct Find: AsyncParsableCommand {
 struct Screenshot: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "screenshot",
-        abstract: "Capture a PNG screenshot of the target window.")
+        abstract: "Capture a PNG screenshot of the target window with a coordinate grid overlay.")
 
     @OptionGroup var target: TargetOptions
 
     @Option(name: [.customShort("o"), .long], help: "Output PNG path.")
     var output: String
 
+    @Flag(name: .long, help: "Skip the coordinate grid overlay.")
+    var clean: Bool = false
+
+    @Option(name: .long, help: "Grid spacing in screen points (default 200). Smaller = denser.")
+    var gridPitch: Double = 200
+
+    @Option(name: .long, help: "Output pixel scale relative to screen points (default 0.5 for agent consumption; 1 for native; 2 for retina).")
+    var scale: Double = 0.5
+
     func run() async throws {
+        // Bootstrap AppKit's CGS session before any Core Text / bitmap-context
+        // work runs inside overlayGrid. Touching NSApplication.shared on the
+        // main actor is the one reliable init path from a CLI.
+        if !clean {
+            await MainActor.run { _ = NSApplication.shared }
+        }
         let resolved = try TargetResolver.resolve(target)
         let url = URL(fileURLWithPath: output).absoluteURL
         try await Capture.screenshot(
-            pid: resolved.pid, windowFilter: resolved.windowFilter, output: url)
+            pid: resolved.pid, windowFilter: resolved.windowFilter,
+            output: url,
+            grid: !clean,
+            gridPitch: CGFloat(gridPitch),
+            captureScale: CGFloat(scale))
         print(url.path)
     }
 }

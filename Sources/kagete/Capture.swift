@@ -1,11 +1,16 @@
 import AppKit
 import CoreGraphics
+import CoreText
 import Foundation
 import ScreenCaptureKit
 import UniformTypeIdentifiers
 
 enum Capture {
-    static func screenshot(pid: pid_t, windowFilter: String?, output: URL) async throws {
+    static func screenshot(
+        pid: pid_t, windowFilter: String?, output: URL,
+        grid: Bool = false, gridPitch: CGFloat = 200,
+        captureScale: CGFloat = 0.5
+    ) async throws {
         guard Permissions.screenRecording else {
             throw KageteError.notTrusted(
                 "Screen Recording permission not granted. Run `kagete doctor --prompt` or grant it in System Settings → Privacy & Security → Screen Recording.")
@@ -32,7 +37,11 @@ enum Capture {
             target = candidates[0]
         }
 
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        // Downsample for agent consumption. Default captureScale=0.5 produces
+        // roughly half-dimension PNGs (~0.6 MB vs ~2.5 MB for a 2320-point
+        // window) while keeping grid labels legible. `--scale 1` restores
+        // full screen-point fidelity.
+        let scale = max(0.1, captureScale)
         let config = SCStreamConfiguration()
         config.width = max(1, Int(target.frame.width * scale))
         config.height = max(1, Int(target.frame.height * scale))
@@ -40,10 +49,141 @@ enum Capture {
         config.capturesAudio = false
 
         let filter = SCContentFilter(desktopIndependentWindow: target)
-        let cgImage = try await SCScreenshotManager.captureImage(
+        var cgImage = try await SCScreenshotManager.captureImage(
             contentFilter: filter, configuration: config)
 
+        if grid {
+            // Core Text + CGContext bitmap drawing needs the CGS session to
+            // be initialized. Hopping to the main actor is the simplest way
+            // to trigger that from a plain async CLI.
+            let annotated = await MainActor.run { () -> CGImage? in
+                overlayGrid(
+                    on: cgImage,
+                    windowOrigin: target.frame.origin,
+                    scale: scale,
+                    pitch: gridPitch)
+            }
+            if let annotated { cgImage = annotated }
+        }
+
         try writePNG(cgImage, to: output)
+    }
+
+    /// Overlay screen-point gridlines on a captured window image. Labels show
+    /// the absolute screen-point coordinate that the line corresponds to —
+    /// matching the coordinate system used by `kagete click --x --y`.
+    ///
+    /// Coordinate convention: CGContext native origin is bottom-left (y-up).
+    /// Screen / window coords are top-down (y-down). We draw everything in
+    /// the native y-up system and convert screen-y -> ctx-y with
+    /// `ctxY = pxH - screenY * pxPerPt`.
+    private static func overlayGrid(
+        on image: CGImage, windowOrigin: CGPoint, scale: CGFloat, pitch: CGFloat
+    ) -> CGImage? {
+        let pxW = image.width, pxH = image.height
+        let h = CGFloat(pxH)
+        let cs = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil, width: pxW, height: pxH,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: cs,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+
+        // CGContext.draw places image such that it appears right-side-up in
+        // the default y-up coordinate system. No flip needed here.
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: pxW, height: pxH))
+
+        let pxPerPt = scale
+        let viewW = CGFloat(pxW) / pxPerPt
+        let viewH = CGFloat(pxH) / pxPerPt
+
+        // Fixed pixel dimensions (independent of capture scale) keep labels
+        // readable at both 0.5x and 1x captures.
+        ctx.setStrokeColor(CGColor(red: 0.98, green: 0.2, blue: 0.2, alpha: 0.42))
+        ctx.setLineWidth(1.5)
+
+        // Vertical lines (run full height)
+        var gx = ceil(windowOrigin.x / pitch) * pitch
+        while gx <= windowOrigin.x + viewW {
+            let imgX = (gx - windowOrigin.x) * pxPerPt
+            ctx.move(to: CGPoint(x: imgX, y: 0))
+            ctx.addLine(to: CGPoint(x: imgX, y: h))
+            gx += pitch
+        }
+        // Horizontal lines — screen y converts to y-up ctx coord
+        var gy = ceil(windowOrigin.y / pitch) * pitch
+        while gy <= windowOrigin.y + viewH {
+            let screenRelY = (gy - windowOrigin.y) * pxPerPt
+            let imgY = h - screenRelY
+            ctx.move(to: CGPoint(x: 0, y: imgY))
+            ctx.addLine(to: CGPoint(x: CGFloat(pxW), y: imgY))
+            gy += pitch
+        }
+        ctx.strokePath()
+
+        // Labels — Core Text is already y-up, just position at the right
+        // native coordinate. We treat "top of the cell" as a point slightly
+        // below the gridline (so labels live just inside each cell).
+        let fontSize: CGFloat = 14
+        let font = CTFontCreateWithName("Menlo" as CFString, fontSize, nil)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: CGColor(red: 0.9, green: 0.12, blue: 0.12, alpha: 1.0),
+        ]
+        let bg = CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.82)
+
+        gx = ceil(windowOrigin.x / pitch) * pitch
+        while gx <= windowOrigin.x + viewW {
+            let imgX = (gx - windowOrigin.x) * pxPerPt
+            // Label sits in top-left corner of the cell (just below gridline
+            // in screen terms; so just below the top of image in y-up terms).
+            drawLabelYUp(
+                "x=\(Int(gx))", nearX: imgX + 3, screenTopY: 4,
+                pxH: h, pxPerPt: pxPerPt,
+                attrs: attrs, bg: bg, in: ctx)
+            gx += pitch
+        }
+        gy = ceil(windowOrigin.y / pitch) * pitch
+        while gy <= windowOrigin.y + viewH {
+            let screenRelY = (gy - windowOrigin.y) * pxPerPt
+            drawLabelYUp(
+                "y=\(Int(gy))", nearX: 4, screenTopY: screenRelY / pxPerPt + 3,
+                pxH: h, pxPerPt: pxPerPt,
+                attrs: attrs, bg: bg, in: ctx)
+            gy += pitch
+        }
+
+        return ctx.makeImage()
+    }
+
+    /// Draw a label at (nearX, screenTopY) where screenTopY is in screen-point
+    /// top-down space relative to the window. Converts to the context's y-up
+    /// coordinate and paints a translucent background rect behind the glyphs.
+    private static func drawLabelYUp(
+        _ text: String, nearX: CGFloat, screenTopY: CGFloat,
+        pxH: CGFloat, pxPerPt: CGFloat,
+        attrs: [NSAttributedString.Key: Any], bg: CGColor, in ctx: CGContext
+    ) {
+        let attributed = NSAttributedString(string: " \(text) ", attributes: attrs)
+        let line = CTLineCreateWithAttributedString(attributed)
+        let b = CTLineGetBoundsWithOptions(line, [.useOpticalBounds])
+
+        let screenTopPx = screenTopY * pxPerPt
+        // In y-up coords, label "top-left" is higher than "baseline-left".
+        let baselineY = pxH - screenTopPx - b.height - b.origin.y
+
+        let bgRect = CGRect(
+            x: nearX - 1,
+            y: pxH - screenTopPx - b.height - 2,
+            width: b.width + 2,
+            height: b.height + 4)
+        ctx.saveGState()
+        ctx.setFillColor(bg)
+        ctx.fill(bgRect)
+        ctx.textPosition = CGPoint(x: nearX, y: baselineY)
+        CTLineDraw(line, ctx)
+        ctx.restoreGState()
     }
 
     private static func writePNG(_ image: CGImage, to url: URL) throws {
