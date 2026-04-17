@@ -18,6 +18,9 @@ struct Kagete: AsyncParsableCommand {
             Key.self,
             Scroll.self,
             Drag.self,
+            Release.self,
+            Overlay.self,
+            OverlayDaemonEntry.self,
         ]
     )
 }
@@ -222,14 +225,19 @@ struct Click: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before clicking.")
     var activate: Bool = true
 
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
     func run() async throws {
         guard let mb = MouseButton(rawValue: button.lowercased()) else {
             throw KageteError.failure("Unknown --button \(button). Use left/right/middle.")
         }
 
         let point: CGPoint
+        var appLabel: String? = nil
         if let ax = axPath {
             let resolved = try TargetResolver.resolve(target)
+            appLabel = resolved.app.localizedName
             if activate {
                 resolved.app.activate()
                 try await Task.sleep(nanoseconds: 150_000_000)
@@ -246,6 +254,12 @@ struct Click: AsyncParsableCommand {
             throw KageteError.failure("Provide --ax-path (with --app/--bundle/--pid) or --x/--y.")
         }
 
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(
+                at: PointJSON(x: Double(point.x), y: Double(point.y)),
+                label: count > 1 ? "click×\(count)" : "click",
+                app: appLabel)))
+        }
         try Input.click(at: point, button: mb, count: count)
     }
 }
@@ -263,13 +277,21 @@ struct TypeText: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before typing (if one is specified).")
     var activate: Bool = true
 
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
     func run() async throws {
+        var appLabel: String? = nil
         if target.app != nil || target.bundle != nil || target.pid != nil {
             let resolved = try TargetResolver.resolve(target)
+            appLabel = resolved.app.localizedName
             if activate {
                 resolved.app.activate()
                 try await Task.sleep(nanoseconds: 150_000_000)
             }
+        }
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(at: nil, label: "type", app: appLabel)))
         }
         try Input.type(text)
     }
@@ -288,13 +310,21 @@ struct Key: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before sending (if one is specified).")
     var activate: Bool = true
 
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
     func run() async throws {
+        var appLabel: String? = nil
         if target.app != nil || target.bundle != nil || target.pid != nil {
             let resolved = try TargetResolver.resolve(target)
+            appLabel = resolved.app.localizedName
             if activate {
                 resolved.app.activate()
                 try await Task.sleep(nanoseconds: 150_000_000)
             }
+        }
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(at: nil, label: "key \(combo)", app: appLabel)))
         }
         let parsed = try KeyCodes.parse(combo)
         try Input.key(parsed)
@@ -320,13 +350,21 @@ struct Scroll: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before scrolling (if one is specified).")
     var activate: Bool = true
 
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
     func run() async throws {
+        var appLabel: String? = nil
         if target.app != nil || target.bundle != nil || target.pid != nil {
             let resolved = try TargetResolver.resolve(target)
+            appLabel = resolved.app.localizedName
             if activate {
                 resolved.app.activate()
                 try await Task.sleep(nanoseconds: 150_000_000)
             }
+        }
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(at: nil, label: "scroll", app: appLabel)))
         }
         try Input.scroll(dx: dx, dy: dy, lines: !pixels)
     }
@@ -369,6 +407,9 @@ struct Drag: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app first.")
     var activate: Bool = true
 
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
     func run() async throws {
         let modifiers = try KeyCodes.parseModifiers(mod)
         let hasTargetFlags = target.app != nil || target.bundle != nil || target.pid != nil
@@ -393,6 +434,12 @@ struct Drag: AsyncParsableCommand {
         let end = try resolvePoint(
             axPath: toAxPath, x: toX, y: toY, resolved: resolved, label: "target")
 
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(
+                at: PointJSON(x: Double(start.x), y: Double(start.y)),
+                label: "drag",
+                app: resolved?.app.localizedName)))
+        }
         try Input.drag(
             from: start, to: end,
             steps: steps,
@@ -419,5 +466,67 @@ struct Drag: AsyncParsableCommand {
             return CGPoint(x: cx, y: cy)
         }
         throw KageteError.failure("Provide --\(label)-ax-path or --\(label)-x/--\(label)-y.")
+    }
+}
+
+struct Release: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "release",
+        abstract: "Tell the awareness overlay the agent is done — shows ✓ and returns control.")
+
+    @Argument(help: "Optional label to show instead of \"control returned\".")
+    var label: String = "control returned"
+
+    func run() async throws {
+        OverlayClient.notify(.release(label: label))
+    }
+}
+
+struct Overlay: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "overlay",
+        abstract: "Control the awareness overlay daemon.",
+        subcommands: [OverlayStatus.self, OverlayStop.self])
+}
+
+struct OverlayStatus: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Query the overlay daemon status.")
+
+    func run() async throws {
+        guard OverlayClient.isEnabled else {
+            print("overlay disabled (KAGETE_OVERLAY=0)")
+            return
+        }
+        if let reply = OverlayClient.query(.status) {
+            print(reply.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else {
+            print("overlay: not running")
+        }
+    }
+}
+
+struct OverlayStop: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "stop",
+        abstract: "Force-stop the overlay daemon.")
+
+    func run() async throws {
+        OverlayClient.notify(.stop)
+        print("overlay: stop sent")
+    }
+}
+
+struct OverlayDaemonEntry: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "_overlay-daemon",
+        abstract: "Internal — the overlay helper process (not for direct use).",
+        shouldDisplay: false)
+
+    func run() async throws {
+        await MainActor.run {
+            OverlayDaemon.run()
+        }
     }
 }
