@@ -11,6 +11,7 @@ struct Kagete: AsyncParsableCommand {
             Doctor.self,
             Windows.self,
             Inspect.self,
+            Find.self,
             Screenshot.self,
             Click.self,
             TypeText.self,
@@ -107,6 +108,72 @@ struct Inspect: AsyncParsableCommand {
         let node = try AXInspector.inspect(
             pid: resolved.pid, windowFilter: resolved.windowFilter, maxDepth: maxDepth)
         try JSON.print(node)
+    }
+}
+
+struct Find: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "find",
+        abstract: "Search the AX tree of a window for matching elements.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "Exact AX role (e.g. AXButton, AXTextField).")
+    var role: String?
+
+    @Option(name: .long, help: "Exact AX subrole (e.g. AXCloseButton).")
+    var subrole: String?
+
+    @Option(name: .long, help: "Exact title match.")
+    var title: String?
+
+    @Option(name: .long, help: "Substring of title (case-insensitive).")
+    var titleContains: String?
+
+    @Option(name: [.customLong("id"), .customLong("identifier")], help: "Exact AXIdentifier.")
+    var identifier: String?
+
+    @Option(name: .long, help: "Substring of AXDescription (case-insensitive).")
+    var descriptionContains: String?
+
+    @Option(name: .long, help: "Substring of AXValue (case-insensitive).")
+    var valueContains: String?
+
+    @Flag(name: .long, help: "Only enabled elements.")
+    var enabledOnly: Bool = false
+
+    @Flag(name: .long, help: "Only disabled elements.")
+    var disabledOnly: Bool = false
+
+    @Option(name: .long, help: "Maximum number of hits.")
+    var limit: Int = 50
+
+    @Option(name: .long, help: "Maximum tree depth to descend.")
+    var maxDepth: Int = 64
+
+    @Flag(name: .long, help: "Emit only axPath strings, one per line.")
+    var pathsOnly: Bool = false
+
+    func run() async throws {
+        let criteria = FindCriteria(
+            role: role, subrole: subrole, title: title,
+            titleContains: titleContains, identifier: identifier,
+            descriptionContains: descriptionContains, valueContains: valueContains,
+            enabledOnly: enabledOnly, disabledOnly: disabledOnly)
+        guard criteria.hasAnyFilter else {
+            throw KageteError.failure(
+                "No filters provided. Supply at least one of --role, --title, --title-contains, --id, etc.")
+        }
+        let resolved = try TargetResolver.resolve(target)
+        let hits = try AXInspector.find(
+            pid: resolved.pid, windowFilter: resolved.windowFilter,
+            criteria: criteria, limit: limit, maxDepth: maxDepth)
+
+        if pathsOnly {
+            for h in hits { print(h.axPath) }
+        } else {
+            try JSON.print(hits)
+        }
     }
 }
 

@@ -205,4 +205,138 @@ enum AXInspector {
     static func performAction(_ el: AXUIElement, action: String) -> Bool {
         AXUIElementPerformAction(el, action as CFString) == .success
     }
+
+    static func find(
+        pid: pid_t,
+        windowFilter: String?,
+        criteria: FindCriteria,
+        limit: Int,
+        maxDepth: Int
+    ) throws -> [AXHit] {
+        let root = try selectWindow(pid: pid, windowFilter: windowFilter)
+        let rootSeg = pathSegment(
+            role: copyAttr(root, kAXRoleAttribute) as? String,
+            title: copyAttr(root, kAXTitleAttribute) as? String,
+            identifier: copyAttr(root, kAXIdentifierAttribute) as? String)
+
+        var hits: [AXHit] = []
+        _ = traverse(root, path: "/\(rootSeg)", depth: 0, maxDepth: maxDepth) { el, path in
+            if matches(el, criteria: criteria) {
+                hits.append(hit(from: el, path: path))
+                if hits.count >= limit { return false }
+            }
+            return true
+        }
+        return hits
+    }
+
+    /// Pre-order DFS with stable sibling-indexed paths. Visitor returns
+    /// `false` to stop traversal entirely.
+    @discardableResult
+    private static func traverse(
+        _ el: AXUIElement,
+        path: String,
+        depth: Int,
+        maxDepth: Int,
+        visit: (AXUIElement, String) -> Bool
+    ) -> Bool {
+        if !visit(el, path) { return false }
+        if depth >= maxDepth { return true }
+        guard let kids = copyAttr(el, kAXChildrenAttribute) as? [AXUIElement], !kids.isEmpty else {
+            return true
+        }
+        let rawSegments: [String] = kids.map { child in
+            pathSegment(
+                role: copyAttr(child, kAXRoleAttribute) as? String,
+                title: copyAttr(child, kAXTitleAttribute) as? String,
+                identifier: copyAttr(child, kAXIdentifierAttribute) as? String)
+        }
+        var counts: [String: Int] = [:]
+        for seg in rawSegments { counts[seg, default: 0] += 1 }
+        var nextIndex: [String: Int] = [:]
+        for (i, child) in kids.enumerated() {
+            let base = rawSegments[i]
+            let seg: String
+            if (counts[base] ?? 0) > 1 {
+                let k = nextIndex[base, default: 0]
+                seg = "\(base)[\(k)]"
+                nextIndex[base] = k + 1
+            } else {
+                seg = base
+            }
+            if !traverse(child, path: "\(path)/\(seg)", depth: depth + 1, maxDepth: maxDepth, visit: visit) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func matches(_ el: AXUIElement, criteria: FindCriteria) -> Bool {
+        let role = copyAttr(el, kAXRoleAttribute) as? String
+        let subrole = copyAttr(el, kAXSubroleAttribute) as? String
+        let title = (copyAttr(el, kAXTitleAttribute) as? String) ?? ""
+        let identifier = copyAttr(el, kAXIdentifierAttribute) as? String
+        let description = (copyAttr(el, kAXDescriptionAttribute) as? String) ?? ""
+        let value = stringify(copyAttr(el, kAXValueAttribute)) ?? ""
+        let enabled = copyAttr(el, kAXEnabledAttribute) as? Bool
+
+        if let want = criteria.role, role != want { return false }
+        if let want = criteria.subrole, subrole != want { return false }
+        if let want = criteria.title, title != want { return false }
+        if let want = criteria.titleContains,
+           !title.localizedCaseInsensitiveContains(want) { return false }
+        if let want = criteria.identifier, identifier != want { return false }
+        if let want = criteria.descriptionContains,
+           !description.localizedCaseInsensitiveContains(want) { return false }
+        if let want = criteria.valueContains,
+           !value.localizedCaseInsensitiveContains(want) { return false }
+        if criteria.enabledOnly, enabled != true { return false }
+        if criteria.disabledOnly, enabled == true { return false }
+        return true
+    }
+
+    private static func hit(from el: AXUIElement, path: String) -> AXHit {
+        AXHit(
+            role: copyAttr(el, kAXRoleAttribute) as? String,
+            subrole: copyAttr(el, kAXSubroleAttribute) as? String,
+            title: copyAttr(el, kAXTitleAttribute) as? String,
+            value: stringify(copyAttr(el, kAXValueAttribute)),
+            description: copyAttr(el, kAXDescriptionAttribute) as? String,
+            identifier: copyAttr(el, kAXIdentifierAttribute) as? String,
+            enabled: copyAttr(el, kAXEnabledAttribute) as? Bool,
+            focused: copyAttr(el, kAXFocusedAttribute) as? Bool,
+            frame: frameOf(el),
+            axPath: path)
+    }
+}
+
+struct AXHit: Codable {
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let value: String?
+    let description: String?
+    let identifier: String?
+    let enabled: Bool?
+    let focused: Bool?
+    let frame: BoundsJSON?
+    let axPath: String
+}
+
+struct FindCriteria: Equatable {
+    var role: String?
+    var subrole: String?
+    var title: String?
+    var titleContains: String?
+    var identifier: String?
+    var descriptionContains: String?
+    var valueContains: String?
+    var enabledOnly: Bool = false
+    var disabledOnly: Bool = false
+
+    var hasAnyFilter: Bool {
+        role != nil || subrole != nil || title != nil || titleContains != nil
+            || identifier != nil || descriptionContains != nil || valueContains != nil
+            || enabledOnly || disabledOnly
+    }
 }

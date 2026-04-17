@@ -37,6 +37,25 @@ import Testing
     }
 }
 
+@Suite struct FindCriteriaTests {
+    @Test func emptyCriteriaHasNoFilter() {
+        let c = FindCriteria()
+        #expect(!c.hasAnyFilter)
+    }
+
+    @Test func roleCountsAsFilter() {
+        var c = FindCriteria()
+        c.role = "AXButton"
+        #expect(c.hasAnyFilter)
+    }
+
+    @Test func booleanFlagsCountAsFilter() {
+        var c = FindCriteria()
+        c.enabledOnly = true
+        #expect(c.hasAnyFilter)
+    }
+}
+
 @Suite struct KeyCodeTests {
     @Test func singleLetter() throws {
         let combo = try KeyCodes.parse("s")
