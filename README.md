@@ -15,21 +15,24 @@
 
 ## Install
 
-Requires macOS 14+, Swift 6.0+.
+Requires macOS 14+, Apple Silicon.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ringotypowriter/kagete/main/install.sh | bash
+```
+
+Installs to `~/.local/bin/kagete`. Overrides:
+
+- `KAGETE_INSTALL_DIR=/usr/local/bin` for a different destination
+- Add `~/.local/bin` to `PATH` if it isn't already (the installer prints exact commands)
+
+### From source
 
 ```sh
 git clone https://github.com/ringotypowriter/kagete.git
 cd kagete
 swift build -c release
-sudo cp .build/release/kagete /usr/local/bin/kagete
-```
-
-Or grab the prebuilt binary from [Releases](https://github.com/ringotypowriter/kagete/releases):
-
-```sh
-curl -L https://github.com/ringotypowriter/kagete/releases/latest/download/kagete-macos-arm64.tar.gz | tar xz
-sudo mv kagete /usr/local/bin/kagete
-xattr -dr com.apple.quarantine /usr/local/bin/kagete     # unsigned binary
+cp .build/release/kagete ~/.local/bin/kagete
 ```
 
 ## First run — permissions
