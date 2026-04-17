@@ -241,6 +241,36 @@ struct VerifyJSON: Codable {
     let focusedRole: String?
     let focusedTitle: String?
     let cursor: PointJSON?
+    let typeCheck: TypeCheck?
+
+    init(
+        focusedAxPath: String? = nil,
+        focusedRole: String? = nil,
+        focusedTitle: String? = nil,
+        cursor: PointJSON? = nil,
+        typeCheck: TypeCheck? = nil
+    ) {
+        self.focusedAxPath = focusedAxPath
+        self.focusedRole = focusedRole
+        self.focusedTitle = focusedTitle
+        self.cursor = cursor
+        self.typeCheck = typeCheck
+    }
+
+    /// Post-type verification for the `type` command. `valueChanged` and
+    /// `textLanded` are the reliable signals — `focusedRole` before/after
+    /// is informational only since focus can move mid-type (form submit,
+    /// autocomplete). `textLanded == true` is the only "yes it worked"
+    /// signal agents should branch on.
+    struct TypeCheck: Codable {
+        let preRole: String?
+        let postRole: String?
+        let preValue: String?
+        let postValue: String?
+        let valueChanged: Bool
+        let textLanded: Bool
+        let focusStable: Bool
+    }
 }
 
 extension KageteError {

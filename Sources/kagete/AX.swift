@@ -332,6 +332,46 @@ enum AXInspector {
         return (b.role, b.title)
     }
 
+    /// Fuller snapshot of the focused element — used by `screenshot` to
+    /// draw a visual focus indicator and by `type` to diff values
+    /// pre/post typing. Keeps the raw `AXUIElement` so callers can read
+    /// attributes on the same instance later (focus may have moved by
+    /// the time they look again).
+    struct FocusSnapshot {
+        let element: AXUIElement
+        let role: String?
+        let title: String?
+        let value: String?
+        let frame: CGRect?
+    }
+
+    static func focusedSnapshot(pid: pid_t) -> FocusSnapshot? {
+        let appEl = AXUIElementCreateApplication(pid)
+        var focused: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(
+            appEl, kAXFocusedUIElementAttribute as CFString, &focused)
+        guard err == .success, let ref = focused else { return nil }
+        let el = ref as! AXUIElement
+        let b = bundle(for: el)
+        let frame = b.frame.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
+        return FocusSnapshot(
+            element: el, role: b.role, title: b.title,
+            value: b.valueString, frame: frame)
+    }
+
+    /// Re-read the current `AXValue` of an element. Used by `type` to
+    /// confirm that typed text actually landed in the target — the only
+    /// reliable signal, since `AXFocusedUIElement` may have moved
+    /// during typing (form submit, autocomplete, etc).
+    static func currentValue(of el: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            el, kAXValueAttribute as CFString, &ref) == .success,
+              let raw = ref
+        else { return nil }
+        return stringify(raw)
+    }
+
     /// AX roles that genuinely accept keyboard input. Used to decide whether
     /// `type`'s auto-focus pass needs to fire — if the app already has one
     /// of these focused, the click did its job and we leave focus alone.

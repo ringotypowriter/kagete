@@ -78,6 +78,17 @@ enum Capture {
             }
         }
 
+        // Focus indicator — blinking caret in screenshots is unreliable
+        // signal for "is this input actually focused", so we look it up
+        // via AX and draw a rect over the element's frame.
+        let focusInfo: (role: String?, frame: CGRect)? = {
+            guard let snap = AXInspector.focusedSnapshot(pid: pid),
+                  let frame = snap.frame,
+                  frame.width > 0, frame.height > 0
+            else { return nil }
+            return (snap.role, frame)
+        }()
+
         if grid {
             // Core Text + CGContext bitmap drawing needs the CGS session to
             // be initialized. Hopping to the main actor is the simplest way
@@ -87,7 +98,9 @@ enum Capture {
                     on: cgImage,
                     windowOrigin: effectiveOrigin,
                     scale: scale,
-                    pitch: gridPitch)
+                    pitch: gridPitch,
+                    focusFrame: focusInfo?.frame,
+                    focusRole: focusInfo?.role)
             }
             if let annotated { cgImage = annotated }
         }
@@ -104,7 +117,8 @@ enum Capture {
     /// the native y-up system and convert screen-y -> ctx-y with
     /// `ctxY = pxH - screenY * pxPerPt`.
     private static func overlayGrid(
-        on image: CGImage, windowOrigin: CGPoint, scale: CGFloat, pitch: CGFloat
+        on image: CGImage, windowOrigin: CGPoint, scale: CGFloat, pitch: CGFloat,
+        focusFrame: CGRect? = nil, focusRole: String? = nil
     ) -> CGImage? {
         let pxW = image.width, pxH = image.height
         let h = CGFloat(pxH)
@@ -124,8 +138,37 @@ enum Capture {
         let viewW = CGFloat(pxW) / pxPerPt
         let viewH = CGFloat(pxH) / pxPerPt
 
-        // Fixed pixel dimensions (independent of capture scale) keep labels
-        // readable at both 0.5x and 1x captures.
+        // Minor subdivision lines — half-pitch step, drawn first (below the
+        // major lines) so majors stay visually dominant. Unlabeled, faint
+        // stroke — gives the agent finer reference anchors between labels
+        // without cluttering readable text.
+        let minorPitch = pitch / 2
+        ctx.setStrokeColor(CGColor(red: 0.98, green: 0.2, blue: 0.2, alpha: 0.16))
+        ctx.setLineWidth(1)
+        var mnx = ceil(windowOrigin.x / minorPitch) * minorPitch
+        while mnx <= windowOrigin.x + viewW {
+            // Skip exact-pitch lines — the major loop below handles those.
+            if mnx.truncatingRemainder(dividingBy: pitch) != 0 {
+                let imgX = (mnx - windowOrigin.x) * pxPerPt
+                ctx.move(to: CGPoint(x: imgX, y: 0))
+                ctx.addLine(to: CGPoint(x: imgX, y: h))
+            }
+            mnx += minorPitch
+        }
+        var mny = ceil(windowOrigin.y / minorPitch) * minorPitch
+        while mny <= windowOrigin.y + viewH {
+            if mny.truncatingRemainder(dividingBy: pitch) != 0 {
+                let screenRelY = (mny - windowOrigin.y) * pxPerPt
+                let imgY = h - screenRelY
+                ctx.move(to: CGPoint(x: 0, y: imgY))
+                ctx.addLine(to: CGPoint(x: CGFloat(pxW), y: imgY))
+            }
+            mny += minorPitch
+        }
+        ctx.strokePath()
+
+        // Major grid lines (labeled below). Slightly more opaque than minors
+        // so the labeled anchors stand out.
         ctx.setStrokeColor(CGColor(red: 0.98, green: 0.2, blue: 0.2, alpha: 0.42))
         ctx.setLineWidth(1.5)
 
@@ -147,6 +190,41 @@ enum Capture {
             gy += pitch
         }
         ctx.strokePath()
+
+        // Focus indicator — screen-point-space rect of the currently-focused
+        // AX element. Blinking text carets are mid-blink half the time in a
+        // screenshot, so the agent can't tell from the image alone whether
+        // an input is focused. Drawing a bright green border + role tag
+        // around the focused element's frame gives unambiguous ground truth.
+        if let frame = focusFrame {
+            let relX = (frame.origin.x - windowOrigin.x) * pxPerPt
+            let relYTop = (frame.origin.y - windowOrigin.y) * pxPerPt
+            let w = frame.width * pxPerPt
+            let fh = frame.height * pxPerPt
+            let ctxY = h - relYTop - fh
+            let rect = CGRect(x: relX, y: ctxY, width: w, height: fh)
+            // Outer halo + inner bright stroke for contrast on any background.
+            ctx.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.85))
+            ctx.setLineWidth(4)
+            ctx.stroke(rect)
+            ctx.setStrokeColor(CGColor(red: 0.15, green: 0.75, blue: 0.35, alpha: 1.0))
+            ctx.setLineWidth(2.5)
+            ctx.stroke(rect)
+
+            let tagText = "focus: \(focusRole ?? "?")"
+            let tagFont = CTFontCreateWithName("Menlo" as CFString, 12, nil)
+            let tagAttrs: [NSAttributedString.Key: Any] = [
+                .font: tagFont,
+                .foregroundColor: CGColor(red: 1, green: 1, blue: 1, alpha: 1),
+            ]
+            let tagBg = CGColor(red: 0.12, green: 0.6, blue: 0.28, alpha: 0.95)
+            // Place tag just above the rect in screen-top-down coords.
+            drawLabelYUp(
+                tagText, nearX: relX,
+                screenTopY: (relYTop - 18) / pxPerPt,
+                pxH: h, pxPerPt: pxPerPt,
+                attrs: tagAttrs, bg: tagBg, in: ctx)
+        }
 
         // Cursor indicator — draws a crosshair where the cursor currently is
         // (in-window) so the agent can see exactly where its last click

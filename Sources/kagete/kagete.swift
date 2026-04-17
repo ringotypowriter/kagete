@@ -314,8 +314,8 @@ struct Screenshot: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip the coordinate grid overlay.")
     var clean: Bool = false
 
-    @Option(name: .long, help: "Grid spacing in screen points (default 200). Smaller = denser.")
-    var gridPitch: Double = 200
+    @Option(name: .long, help: "Grid spacing in screen points (default 100). Smaller = denser.")
+    var gridPitch: Double = 100
 
     @Option(name: .long, help: ArgumentHelp(
         "Output pixel scale relative to screen points (default 0.5 for agent consumption; 1 for native; 2 for retina).",
@@ -619,24 +619,73 @@ struct TypeText: AsyncParsableCommand {
                 usleep(120_000)
             }
         }
+        // Snapshot the target element *before* typing. We re-read its
+        // AXValue post-type to confirm the keystrokes actually landed —
+        // the only reliable signal, since AXFocusedUIElement can move
+        // during typing (submit-on-enter, autocomplete stealing focus).
+        let preSnapshot = resolved.flatMap { AXInspector.focusedSnapshot(pid: $0.pid) }
+
         if !noOverlay {
             OverlayClient.notify(.pulse(.init(at: nil, label: "type", app: resolved?.app.localizedName)))
         }
         try Input.type(text)
 
-        let verify = resolved.map { r -> VerifyJSON in
-            let f = AXInspector.focusedSummary(pid: r.pid)
-            return VerifyJSON(focusedAxPath: nil, focusedRole: f?.role,
-                              focusedTitle: f?.title, cursor: nil)
+        let verify: VerifyJSON?
+        let hint: String?
+        if let r = resolved {
+            let postFocus = AXInspector.focusedSummary(pid: r.pid)
+            let typeCheck: VerifyJSON.TypeCheck?
+            if let pre = preSnapshot {
+                let postValue = AXInspector.currentValue(of: pre.element)
+                let changed = postValue != pre.value
+                let landed = postValue.map { $0.contains(text) } ?? false
+                let stable = postFocus?.role == pre.role && postFocus?.title == pre.title
+                typeCheck = VerifyJSON.TypeCheck(
+                    preRole: pre.role, postRole: postFocus?.role,
+                    preValue: pre.value, postValue: postValue,
+                    valueChanged: changed, textLanded: landed,
+                    focusStable: stable)
+            } else {
+                typeCheck = nil
+            }
+            verify = VerifyJSON(
+                focusedAxPath: nil,
+                focusedRole: postFocus?.role,
+                focusedTitle: postFocus?.title,
+                cursor: nil,
+                typeCheck: typeCheck)
+            hint = Self.buildTypeHint(typeCheck: typeCheck, postFocus: postFocus)
+        } else {
+            verify = nil
+            hint = nil
         }
-        let hint: String? = (verify != nil && verify?.focusedRole == nil)
-            ? "No focused element observed — text may have gone to a background app. Click into a field first."
-            : nil
         try CLIOut.ok(
             command: "type",
             target: resolved.map { TargetJSON(resolved: $0) },
             result: TypeResult(length: text.count),
             verify: verify, hint: hint)
+    }
+
+    private static func buildTypeHint(
+        typeCheck: VerifyJSON.TypeCheck?,
+        postFocus: (role: String?, title: String?)?
+    ) -> String? {
+        guard let tc = typeCheck else {
+            // No snapshot = no focused element at start = nothing to diff.
+            // Still worth flagging when nothing is focused post-type either.
+            if postFocus?.role == nil {
+                return "No focused element observed — text likely went nowhere. Click into an input first."
+            }
+            return nil
+        }
+        if tc.textLanded { return nil }
+        if !tc.focusStable {
+            return "Focus moved during type (role \(tc.preRole ?? "?") → \(tc.postRole ?? "?")) — common for submit-on-enter / autocomplete stealing focus. Check the new target state."
+        }
+        if tc.valueChanged {
+            return "Target value changed but does not contain the typed text — the app may have transformed, truncated, or auto-corrected the input."
+        }
+        return "Target value did not change — keystrokes likely didn't land in the focused element (custom-drawn input that doesn't surface AXValue, or a read-only field)."
     }
 }
 
