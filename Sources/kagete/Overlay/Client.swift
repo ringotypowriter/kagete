@@ -16,6 +16,14 @@ enum OverlayClient {
         }
     }
 
+    /// Refresh variant: send the message only if a daemon is already running.
+    /// No spawn, no retry — used by passive commands (e.g. `screenshot`) that
+    /// should extend / update an existing overlay but must never summon one.
+    static func notifyIfRunning(_ msg: OverlayMessage) {
+        guard isEnabled else { return }
+        _ = connectAndSend(msg)
+    }
+
     /// Synchronous round-trip — used by `overlay status`, which wants a reply.
     static func query(_ msg: OverlayMessage) -> String? {
         guard isEnabled else { return nil }

@@ -26,7 +26,7 @@ struct PointJSON: Codable, Equatable, Sendable {
 
 enum OverlayConfig {
     /// Idle duration before the daemon self-retires and returns control to user.
-    static let idleTimeout: TimeInterval = 10.0
+    static let idleTimeout: TimeInterval = 15.0
     /// How long each action pulse is visible.
     static let pulseDuration: TimeInterval = 0.4
     /// Duration of the "✓ control returned" ceremony before the daemon exits.

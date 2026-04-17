@@ -373,6 +373,11 @@ struct Screenshot: AsyncParsableCommand {
             captureScale: CGFloat(scale),
             crop: cropRect)
 
+        // Refresh-only: extend the idle timer and update the pill *if* an
+        // overlay is already running, but never spawn one just for a capture.
+        OverlayClient.notifyIfRunning(.pulse(.init(
+            at: nil, label: "screenshot", app: resolved.app.localizedName)))
+
         if text {
             print(url.path)
             return
