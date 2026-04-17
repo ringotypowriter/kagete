@@ -12,22 +12,59 @@ struct AXNode: Codable {
     let help: String?
     let enabled: Bool?
     let focused: Bool?
+    let actions: [String]?
     let frame: BoundsJSON?
     let axPath: String
     let children: [AXNode]
+
+    /// A node carries information if it has any human-readable label or can be
+    /// acted on directly via the AX API. Everything else is structural noise.
+    var hasContent: Bool {
+        let nonEmpty: (String?) -> Bool = { ($0?.isEmpty == false) }
+        if nonEmpty(title) || nonEmpty(value) || nonEmpty(description)
+            || nonEmpty(identifier) || nonEmpty(help) { return true }
+        if let acts = actions, !acts.isEmpty { return true }
+        return false
+    }
 }
 
 enum AXInspector {
-    static func inspect(pid: pid_t, windowFilter: String?, maxDepth: Int) throws -> AXNode {
+    static func inspect(
+        pid: pid_t, windowFilter: String?, maxDepth: Int,
+        compact: Bool = true, withActions: Bool = false
+    ) throws -> AXNode {
         let chosen = try selectWindow(pid: pid, windowFilter: windowFilter)
         let rootSegment = pathSegment(
             role: copyAttr(chosen, kAXRoleAttribute) as? String,
             title: copyAttr(chosen, kAXTitleAttribute) as? String,
             identifier: copyAttr(chosen, kAXIdentifierAttribute) as? String)
-        return walk(chosen, path: "/\(rootSegment)", depth: 0, maxDepth: maxDepth)
+        let raw = walk(
+            chosen, path: "/\(rootSegment)", depth: 0,
+            maxDepth: maxDepth, withActions: withActions)
+        return compact ? prune(raw) ?? raw : raw
     }
 
-    private static func walk(_ el: AXUIElement, path: String, depth: Int, maxDepth: Int) -> AXNode {
+    /// Strip structural noise: nodes with no label, no actions, and no labeled
+    /// descendants. The surviving tree keeps its original axPath strings so
+    /// `find`/`click` still resolve against the live tree unchanged.
+    static func prune(_ node: AXNode) -> AXNode? {
+        let kept = node.children.compactMap(prune)
+        if node.hasContent || !kept.isEmpty {
+            return AXNode(
+                role: node.role, subrole: node.subrole,
+                title: node.title, value: node.value,
+                description: node.description, identifier: node.identifier,
+                help: node.help, enabled: node.enabled, focused: node.focused,
+                actions: node.actions, frame: node.frame,
+                axPath: node.axPath, children: kept)
+        }
+        return nil
+    }
+
+    private static func walk(
+        _ el: AXUIElement, path: String, depth: Int, maxDepth: Int,
+        withActions: Bool
+    ) -> AXNode {
         let role = copyAttr(el, kAXRoleAttribute) as? String
         let subrole = copyAttr(el, kAXSubroleAttribute) as? String
         let title = copyAttr(el, kAXTitleAttribute) as? String
@@ -37,6 +74,7 @@ enum AXInspector {
         let help = copyAttr(el, kAXHelpAttribute) as? String
         let enabled = copyAttr(el, kAXEnabledAttribute) as? Bool
         let focused = copyAttr(el, kAXFocusedAttribute) as? Bool
+        let actions = withActions ? actionNames(el) : []
         let frame = frameOf(el)
 
         var children: [AXNode] = []
@@ -61,14 +99,18 @@ enum AXInspector {
                 } else {
                     seg = base
                 }
-                children.append(walk(child, path: "\(path)/\(seg)", depth: depth + 1, maxDepth: maxDepth))
+                children.append(walk(
+                    child, path: "\(path)/\(seg)", depth: depth + 1,
+                    maxDepth: maxDepth, withActions: withActions))
             }
         }
 
         return AXNode(
             role: role, subrole: subrole, title: title, value: value,
             description: description, identifier: identifier, help: help,
-            enabled: enabled, focused: focused, frame: frame,
+            enabled: enabled, focused: focused,
+            actions: actions.isEmpty ? nil : actions,
+            frame: frame,
             axPath: path, children: children)
     }
 
@@ -85,6 +127,17 @@ enum AXInspector {
     private static func escape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// Names of the AX actions an element advertises (e.g. `AXPress`,
+    /// `AXShowMenu`, `AXIncrement`). Empty array when the API call fails or
+    /// the element has no actions — callers should treat both the same.
+    static func actionNames(_ el: AXUIElement) -> [String] {
+        var ref: CFArray?
+        guard AXUIElementCopyActionNames(el, &ref) == .success,
+              let array = ref as? [String]
+        else { return [] }
+        return array
     }
 
     private static func copyAttr(_ el: AXUIElement, _ key: String) -> Any? {
@@ -296,7 +349,8 @@ enum AXInspector {
     }
 
     private static func hit(from el: AXUIElement, path: String) -> AXHit {
-        AXHit(
+        let acts = actionNames(el)
+        return AXHit(
             role: copyAttr(el, kAXRoleAttribute) as? String,
             subrole: copyAttr(el, kAXSubroleAttribute) as? String,
             title: copyAttr(el, kAXTitleAttribute) as? String,
@@ -305,6 +359,7 @@ enum AXInspector {
             identifier: copyAttr(el, kAXIdentifierAttribute) as? String,
             enabled: copyAttr(el, kAXEnabledAttribute) as? Bool,
             focused: copyAttr(el, kAXFocusedAttribute) as? Bool,
+            actions: acts.isEmpty ? nil : acts,
             frame: frameOf(el),
             axPath: path)
     }
@@ -319,6 +374,7 @@ struct AXHit: Codable {
     let identifier: String?
     let enabled: Bool?
     let focused: Bool?
+    let actions: [String]?
     let frame: BoundsJSON?
     let axPath: String
 }

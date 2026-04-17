@@ -1,3 +1,4 @@
+import ApplicationServices
 import ArgumentParser
 import Foundation
 
@@ -101,17 +102,24 @@ struct Windows: AsyncParsableCommand {
 struct Inspect: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "inspect",
-        abstract: "Dump the AX element tree of a target window as JSON.")
+        abstract: "Dump the AX element tree of a target window as JSON (compact by default).")
 
     @OptionGroup var target: TargetOptions
 
     @Option(name: .long, help: "Maximum tree depth to descend.")
     var maxDepth: Int = 12
 
+    @Flag(name: .long, help: "Emit the full raw tree without pruning unlabeled AXUnknown nodes.")
+    var full: Bool = false
+
+    @Flag(name: .long, help: "Include AX action names per node (extra IPC per element — slow on large trees).")
+    var withActions: Bool = false
+
     func run() async throws {
         let resolved = try TargetResolver.resolve(target)
         let node = try AXInspector.inspect(
-            pid: resolved.pid, windowFilter: resolved.windowFilter, maxDepth: maxDepth)
+            pid: resolved.pid, windowFilter: resolved.windowFilter,
+            maxDepth: maxDepth, compact: !full, withActions: withActions)
         try JSON.print(node)
     }
 }
@@ -226,8 +234,14 @@ struct Click: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before clicking.")
     var activate: Bool = true
 
-    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    @Flag(name: .long, help: "Skip the overlay pulse for this command.")
     var noOverlay: Bool = false
+
+    @Flag(name: .long, help: "Force CGEvent click even when the element advertises AXPress.")
+    var noAxPress: Bool = false
+
+    @Flag(name: .long, help: "Print a small JSON report describing how the click was dispatched.")
+    var json: Bool = false
 
     func run() async throws {
         guard let mb = MouseButton(rawValue: button.lowercased()) else {
@@ -236,6 +250,8 @@ struct Click: AsyncParsableCommand {
 
         let point: CGPoint
         var appLabel: String? = nil
+        var element: AXUIElement? = nil
+        var elementActions: [String] = []
         if let ax = axPath {
             let resolved = try TargetResolver.resolve(target)
             appLabel = resolved.app.localizedName
@@ -244,6 +260,8 @@ struct Click: AsyncParsableCommand {
             }
             let el = try AXInspector.locate(
                 pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: ax)
+            element = el
+            elementActions = AXInspector.actionNames(el)
             guard let center = AXInspector.screenCenter(of: el) else {
                 throw KageteError.failure("Element at \(ax) has no resolvable frame.")
             }
@@ -260,7 +278,40 @@ struct Click: AsyncParsableCommand {
                 label: count > 1 ? "click×\(count)" : "click",
                 app: appLabel)))
         }
-        try Input.click(at: point, button: mb, count: count)
+
+        // AXPress is a single-activation primitive — it doesn't express button
+        // type or click count, so we only take the AX path for a plain left
+        // single-click on a resolved element that advertises it.
+        let canAxPress = !noAxPress && mb == .left && count == 1
+            && element != nil && elementActions.contains(kAXPressAction)
+
+        let method: String
+        if canAxPress, let el = element {
+            let status = AXUIElementPerformAction(el, kAXPressAction as CFString)
+            if status == .success {
+                method = "ax-press"
+            } else {
+                try Input.click(at: point, button: mb, count: count)
+                method = "cg-event-fallback"
+            }
+        } else {
+            try Input.click(at: point, button: mb, count: count)
+            method = "cg-event"
+        }
+
+        if json {
+            struct Report: Codable {
+                let method: String
+                let point: PointJSON
+                let actions: [String]?
+                let axPath: String?
+            }
+            try JSON.print(Report(
+                method: method,
+                point: PointJSON(x: Double(point.x), y: Double(point.y)),
+                actions: elementActions.isEmpty ? nil : elementActions,
+                axPath: axPath))
+        }
     }
 }
 

@@ -44,9 +44,11 @@ kagete inspect --bundle com.apple.finder --max-depth 4
 Flags:
 
 - `--max-depth N` (default `12`) — cap recursion depth. Useful for huge windows.
+- `--full` — emit the raw tree without pruning. Default is compact: unlabeled `AXUnknown` nodes with no labeled descendants are dropped. The surviving nodes keep their original `axPath`, so `find`/`click` still resolve against the live tree.
+- `--with-actions` — include each node's advertised AX actions (e.g. `AXPress`). Adds one IPC call per node — avoid on large web-embedded UIs (Tencent apps, Electron).
 - Standard target flags: `--app` / `--bundle` / `--pid` / `--window`.
 
-Each node has: `role`, `subrole`, `title`, `value`, `description`, `identifier`, `help`, `enabled`, `focused`, `frame`, `axPath`, `children`.
+Each node has: `role`, `subrole`, `title`, `value`, `description`, `identifier`, `help`, `enabled`, `focused`, `actions`, `frame`, `axPath`, `children`.
 
 **Prefer `find` instead when you know what you're looking for.**
 
@@ -130,6 +132,10 @@ Flags:
 - `--button left|right|middle` (default `left`)
 - `--count N` (default `1`) — `2` for double-click, `3` triple
 - `--activate` / `--no-activate` (default activate) — bring target app frontmost first
+- `--no-ax-press` — force CGEvent click even when the element advertises `AXPress`
+- `--json` — print a dispatch report (`{method, point, actions, axPath}`)
+
+**Dispatch strategy.** For a plain left single-click on a resolved `--ax-path`, kagete prefers `AXUIElementPerformAction(AXPress)` when the element's `actions` list contains it. This routes through the accessibility API and works on occluded or offscreen elements. Multi-click, right-click, and coord-only clicks always use CGEvent.
 
 ---
 
