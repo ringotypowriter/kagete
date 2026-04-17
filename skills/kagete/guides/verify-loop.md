@@ -10,15 +10,21 @@ Fast, machine-readable, works for changes that affect the AX tree (a button appe
 
 ```bash
 # Before: save button is enabled
-kagete find --app TextEdit --role AXButton --title "Save" | jq '.[0].enabled'
+kagete find --app TextEdit --role AXButton --title "Save" | jq '.result.hits[0].enabled'
 # true
 
 # Act
 kagete key --app TextEdit cmd+s
 
 # After: document title lost the "— Edited" suffix (= save succeeded)
-kagete find --app TextEdit --role AXWindow --title-contains "Edited" --paths-only
-# (empty output — verified)
+kagete find --app TextEdit --role AXWindow --title-contains "Edited" | jq '.result.count'
+# 0 — verified
+```
+
+Many input commands carry the post-action state on the response envelope itself (`verify.focusedRole`, `verify.cursor`), so you often don't need a follow-up `find` at all:
+
+```bash
+kagete click --app TextEdit --ax-path '…' | jq -e '.verify.focusedRole == "AXTextField"'
 ```
 
 ### 2. Visual — screenshot and read it
@@ -104,11 +110,10 @@ fi
 Before typing, check that the click actually focused the field you meant:
 
 ```bash
-kagete click --app Mail --ax-path '…/AXTextField[title="To:"]'
-
-# Verify focus
-focused=$(kagete find --app Mail --role AXTextField --title "To:" | jq '.[0].focused')
-if [ "$focused" != "true" ]; then
+# The click envelope already carries the focused element — no follow-up needed
+role=$(kagete click --app Mail --ax-path '…/AXTextField[title="To:"]' \
+  | jq -r '.verify.focusedRole')
+if [ "$role" != "AXTextField" ]; then
   echo "focus didn't land — aborting before typing into the wrong place"
   exit 1
 fi
@@ -143,8 +148,8 @@ done
 
 | Situation | Use |
 |---|---|
-| Did my click land on the right element? | `find` → check `focused: true` |
-| Did the value in this field update? | `find` → read `value` |
+| Did my click land on the right element? | Read `.verify.focusedRole` / `.verify.focusedTitle` on the click envelope itself |
+| Did the value in this field update? | `find` → `.result.hits[0].value` |
 | Did a dialog appear? | `find --role AXSheet` / `AXDialog` / `--title "…"` |
 | Did the page's visual state change? | `screenshot`, then Read |
 | Was a visual-only element (chart, canvas, custom view) updated? | `screenshot` |

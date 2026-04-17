@@ -36,8 +36,14 @@ struct Doctor: AsyncParsableCommand {
     @Flag(name: .long, help: "Trigger the system permission prompts for any missing grants.")
     var prompt: Bool = false
 
-    @Flag(name: .long, help: "Emit JSON instead of human-readable text.")
-    var json: Bool = false
+    @Flag(name: .long, help: "Print a human-readable report instead of the JSON envelope.")
+    var text: Bool = false
+
+    struct DoctorResult: Codable {
+        let accessibility: Bool
+        let screenRecording: Bool
+        let allGranted: Bool
+    }
 
     func run() async throws {
         if prompt {
@@ -47,28 +53,33 @@ struct Doctor: AsyncParsableCommand {
 
         let ax = Permissions.accessibility
         let sr = Permissions.screenRecording
+        let result = DoctorResult(accessibility: ax, screenRecording: sr, allGranted: ax && sr)
 
-        if json {
-            struct Report: Codable { let accessibility: Bool; let screenRecording: Bool; let ok: Bool }
-            try JSON.print(Report(accessibility: ax, screenRecording: sr, ok: ax && sr))
+        if text {
+            print("kagete doctor")
+            print("  Accessibility     : \(ax ? "granted" : "MISSING")")
+            print("  Screen Recording  : \(sr ? "granted" : "MISSING")")
+            if !ax {
+                print("    → System Settings → Privacy & Security → Accessibility → add kagete.")
+            }
+            if !sr {
+                print("    → System Settings → Privacy & Security → Screen Recording → add kagete.")
+            }
+            if ax && sr {
+                print("\nAll good, leader. ✓")
+            } else {
+                print("\nFix the items above, or rerun with --prompt to trigger system dialogs.")
+                throw ExitCode(1)
+            }
             return
         }
 
-        print("kagete doctor")
-        print("  Accessibility     : \(ax ? "granted" : "MISSING")")
-        print("  Screen Recording  : \(sr ? "granted" : "MISSING")")
-        if !ax {
-            print("    → System Settings → Privacy & Security → Accessibility → add kagete.")
-        }
-        if !sr {
-            print("    → System Settings → Privacy & Security → Screen Recording → add kagete.")
-        }
-        if ax && sr {
-            print("\nAll good, leader. ✓")
-        } else {
-            print("\nFix the items above, or rerun with --prompt to trigger system dialogs.")
-            throw ExitCode(1)
-        }
+        let missing = [(!ax ? "Accessibility" : nil), (!sr ? "Screen Recording" : nil)].compactMap { $0 }
+        let hint: String? = missing.isEmpty
+            ? nil
+            : "Missing: \(missing.joined(separator: ", ")). Rerun with --prompt to trigger system dialogs."
+        try CLIOut.ok(command: "doctor", result: result, hint: hint)
+        if !result.allGranted { throw ExitCode(1) }
     }
 }
 
@@ -86,6 +97,11 @@ struct Windows: AsyncParsableCommand {
     @Option(name: .long, help: "Filter by process id.")
     var pid: Int32?
 
+    struct WindowsResult: Codable {
+        let count: Int
+        let windows: [WindowRecord]
+    }
+
     func run() async throws {
         var records = WindowList.all()
         if let pid = pid { records = records.filter { $0.pid == pid } }
@@ -96,7 +112,13 @@ struct Windows: AsyncParsableCommand {
         if let bundle = bundle {
             records = records.filter { $0.bundleId == bundle }
         }
-        try JSON.print(records)
+        let hint: String? = records.isEmpty && (app != nil || bundle != nil || pid != nil)
+            ? "No windows match the filter. The app may be hidden, minimized, or have no windowLayer=0 windows."
+            : nil
+        try CLIOut.ok(
+            command: "windows",
+            result: WindowsResult(count: records.count, windows: records),
+            hint: hint)
     }
 }
 
@@ -293,7 +315,28 @@ struct Screenshot: AsyncParsableCommand {
     @Option(name: .long, help: "Crop to a window-relative region: \"x,y,w,h\" in screen points (e.g. \"400,200,800,600\"). Labels still show absolute screen coords.")
     var crop: String?
 
+    @Flag(name: .long, help: "Print only the output path (shell-friendly) instead of the JSON envelope.")
+    var text: Bool = false
+
+    struct ScreenshotResult: Codable {
+        let path: String
+        let scale: Double
+        let grid: Bool
+        let cropped: Bool
+    }
+
     func run() async throws {
+        do {
+            try await runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                ScreenshotResult.self, command: "screenshot",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
         // Bootstrap AppKit's CGS session so Core Text / bitmap-context work
         // and the PNG writer both have what they need. Touching
         // NSApplication.shared on the main actor is the reliable init path
@@ -320,7 +363,16 @@ struct Screenshot: AsyncParsableCommand {
             gridPitch: CGFloat(gridPitch),
             captureScale: CGFloat(scale),
             crop: cropRect)
-        print(url.path)
+
+        if text {
+            print(url.path)
+            return
+        }
+        try CLIOut.ok(
+            command: "screenshot",
+            target: TargetJSON(resolved: resolved),
+            result: ScreenshotResult(
+                path: url.path, scale: scale, grid: !clean, cropped: cropRect != nil))
     }
 }
 
@@ -524,19 +576,47 @@ struct TypeText: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
 
+    struct TypeResult: Codable {
+        let length: Int
+    }
+
     func run() async throws {
-        var appLabel: String? = nil
-        if target.app != nil || target.bundle != nil || target.pid != nil {
-            let resolved = try TargetResolver.resolve(target)
-            appLabel = resolved.app.localizedName
-            if activate {
-                try await Activator.activate(resolved)
+        do {
+            try await runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                TypeResult.self, command: "type",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        var resolved: ResolvedTarget? = nil
+        if target.hasAppSelector {
+            resolved = try TargetResolver.resolve(target)
+            if activate, let r = resolved {
+                try await Activator.activate(r)
             }
         }
         if !noOverlay {
-            OverlayClient.notify(.pulse(.init(at: nil, label: "type", app: appLabel)))
+            OverlayClient.notify(.pulse(.init(at: nil, label: "type", app: resolved?.app.localizedName)))
         }
         try Input.type(text)
+
+        let verify = resolved.map { r -> VerifyJSON in
+            let f = AXInspector.focusedSummary(pid: r.pid)
+            return VerifyJSON(focusedAxPath: nil, focusedRole: f?.role,
+                              focusedTitle: f?.title, cursor: nil)
+        }
+        let hint: String? = (verify != nil && verify?.focusedRole == nil)
+            ? "No focused element observed — text may have gone to a background app. Click into a field first."
+            : nil
+        try CLIOut.ok(
+            command: "type",
+            target: resolved.map { TargetJSON(resolved: $0) },
+            result: TypeResult(length: text.count),
+            verify: verify, hint: hint)
     }
 }
 
@@ -556,20 +636,46 @@ struct Key: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
 
+    struct KeyResult: Codable {
+        let combo: String
+        let keyCode: Int
+    }
+
     func run() async throws {
-        var appLabel: String? = nil
-        if target.app != nil || target.bundle != nil || target.pid != nil {
-            let resolved = try TargetResolver.resolve(target)
-            appLabel = resolved.app.localizedName
-            if activate {
-                try await Activator.activate(resolved)
+        do {
+            try await runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                KeyResult.self, command: "key",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        var resolved: ResolvedTarget? = nil
+        if target.hasAppSelector {
+            resolved = try TargetResolver.resolve(target)
+            if activate, let r = resolved {
+                try await Activator.activate(r)
             }
         }
         if !noOverlay {
-            OverlayClient.notify(.pulse(.init(at: nil, label: "key \(combo)", app: appLabel)))
+            OverlayClient.notify(.pulse(.init(at: nil, label: "key \(combo)", app: resolved?.app.localizedName)))
         }
         let parsed = try KeyCodes.parse(combo)
         try Input.key(parsed)
+
+        let verify = resolved.map { r -> VerifyJSON in
+            let f = AXInspector.focusedSummary(pid: r.pid)
+            return VerifyJSON(focusedAxPath: nil, focusedRole: f?.role,
+                              focusedTitle: f?.title, cursor: nil)
+        }
+        try CLIOut.ok(
+            command: "key",
+            target: resolved.map { TargetJSON(resolved: $0) },
+            result: KeyResult(combo: combo, keyCode: Int(parsed.keyCode)),
+            verify: verify)
     }
 }
 
@@ -595,19 +701,40 @@ struct Scroll: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
 
+    struct ScrollResult: Codable {
+        let dx: Int32
+        let dy: Int32
+        let units: String
+    }
+
     func run() async throws {
-        var appLabel: String? = nil
-        if target.app != nil || target.bundle != nil || target.pid != nil {
-            let resolved = try TargetResolver.resolve(target)
-            appLabel = resolved.app.localizedName
-            if activate {
-                try await Activator.activate(resolved)
+        do {
+            try await runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                ScrollResult.self, command: "scroll",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        var resolved: ResolvedTarget? = nil
+        if target.hasAppSelector {
+            resolved = try TargetResolver.resolve(target)
+            if activate, let r = resolved {
+                try await Activator.activate(r)
             }
         }
         if !noOverlay {
-            OverlayClient.notify(.pulse(.init(at: nil, label: "scroll", app: appLabel)))
+            OverlayClient.notify(.pulse(.init(at: nil, label: "scroll", app: resolved?.app.localizedName)))
         }
         try Input.scroll(dx: dx, dy: dy, lines: !pixels)
+
+        try CLIOut.ok(
+            command: "scroll",
+            target: resolved.map { TargetJSON(resolved: $0) },
+            result: ScrollResult(dx: dx, dy: dy, units: pixels ? "pixels" : "lines"))
     }
 }
 
@@ -651,7 +778,26 @@ struct Drag: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
 
+    struct DragResult: Codable {
+        let from: PointJSON
+        let to: PointJSON
+        let steps: Int
+        let holdMs: Int
+        let modifiers: String
+    }
+
     func run() async throws {
+        do {
+            try await runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                DragResult.self, command: "drag",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
         let modifiers = try KeyCodes.parseModifiers(mod)
         let hasTargetFlags = target.app != nil || target.bundle != nil || target.pid != nil
 
@@ -685,6 +831,19 @@ struct Drag: AsyncParsableCommand {
             steps: steps,
             holdMicros: UInt32(max(0, holdMs) * 1000),
             modifiers: modifiers)
+
+        let cursor = CGEvent(source: nil).map {
+            PointJSON(x: Double($0.location.x), y: Double($0.location.y))
+        }
+        try CLIOut.ok(
+            command: "drag",
+            target: resolved.map { TargetJSON(resolved: $0) },
+            result: DragResult(
+                from: PointJSON(x: Double(start.x), y: Double(start.y)),
+                to: PointJSON(x: Double(end.x), y: Double(end.y)),
+                steps: steps, holdMs: holdMs, modifiers: mod),
+            verify: VerifyJSON(focusedAxPath: nil, focusedRole: nil,
+                               focusedTitle: nil, cursor: cursor))
     }
 
     private func resolvePoint(
@@ -717,8 +876,13 @@ struct Release: AsyncParsableCommand {
     @Argument(help: "Optional label to show instead of \"control returned\".")
     var label: String = "control returned"
 
+    struct ReleaseResult: Codable {
+        let label: String
+    }
+
     func run() async throws {
         OverlayClient.notify(.release(label: label))
+        try CLIOut.ok(command: "release", result: ReleaseResult(label: label))
     }
 }
 
@@ -729,33 +893,54 @@ struct Raise: AsyncParsableCommand {
 
     @OptionGroup var target: TargetOptions
 
-    @Flag(name: .long, help: "Emit JSON with a post-raise report.")
-    var json: Bool = false
+    @Flag(name: .long, help: "Print a human-readable report instead of the JSON envelope.")
+    var text: Bool = false
+
+    struct RaiseResult: Codable {
+        let setFrontmost: Bool
+        let raisedWindow: Bool
+        let setMain: Bool
+        let frontmostAfter: String?
+        let changedFocus: Bool
+    }
 
     func run() async throws {
+        do {
+            try runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                RaiseResult.self, command: "raise",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() throws {
         let resolved = try TargetResolver.resolve(target)
         let report = try AXRaise.raise(pid: resolved.pid, windowFilter: resolved.windowFilter)
-        if json {
-            struct Out: Codable {
-                let app: String?
-                let setFrontmost: Bool
-                let raisedWindow: Bool
-                let setMain: Bool
-                let frontmostAfter: String?
-            }
-            try JSON.print(Out(
-                app: resolved.app.localizedName,
-                setFrontmost: report.setFrontmost,
-                raisedWindow: report.raisedWindow,
-                setMain: report.setMain,
-                frontmostAfter: report.frontmostAfter))
-        } else {
+        let result = RaiseResult(
+            setFrontmost: report.setFrontmost,
+            raisedWindow: report.raisedWindow,
+            setMain: report.setMain,
+            frontmostAfter: report.frontmostAfter,
+            changedFocus: report.changedFocus)
+
+        if text {
             print("raise \(resolved.app.localizedName ?? "?") pid=\(resolved.pid)")
             print("  AXFrontmost      : \(report.setFrontmost ? "set" : "FAILED")")
             print("  AXRaise(window)  : \(report.raisedWindow ? "ok" : "FAILED")")
             print("  AXMain(window)   : \(report.setMain ? "set" : "FAILED")")
             print("  frontmost after  : \(report.frontmostAfter ?? "?")")
+            return
         }
+
+        let hint: String? = report.changedFocus
+            ? nil
+            : "AX raise did not change focus — another app may be holding it (e.g. CleanShot X recorder). Try --no-activate=false on the next action."
+        try CLIOut.ok(
+            command: "raise",
+            target: TargetJSON(resolved: resolved),
+            result: result, hint: hint)
     }
 }
 

@@ -11,7 +11,7 @@ kagete gives agents **eyes and hands** for any macOS application through the Acc
 - **Eyes:** `inspect` (full AX tree) · `find` (filtered query) · `screenshot` (PNG) · `windows` (enumerate)
 - **Hands:** `click` · `type` · `key` · `scroll` · `drag`
 
-All output is JSON or newline-separated paths — designed for shell composition.
+Every command emits a uniform JSON envelope on stdout — `{ok, command, target, result, verify, hint, error}` — so agents branch on `ok` + `error.code` instead of parsing per-command shapes. See [Output Envelope](#output-envelope) below.
 
 ## Install
 
@@ -120,13 +120,53 @@ If `--app` matches multiple running apps, kagete errors with a numbered list —
 - [guides/pipelines.md](guides/pipelines.md) — ready-to-run multi-step recipes: search-and-select, fill a form, replace-text, visual-path end-to-end, wait-for-modal, scroll-to-find, right-click menu
 - [guides/verify-loop.md](guides/verify-loop.md) — closed-loop verification with screenshots and re-queries
 
+## Output Envelope
+
+Every command writes a single JSON object to stdout:
+
+```json
+{
+  "ok": true,
+  "command": "click",
+  "target":  { "pid": 1234, "app": "Safari", "bundle": "com.apple.Safari", "window": "GitHub" },
+  "result":  { "method": "ax-press", "button": "left", "count": 1, "point": {...}, "element": {...} },
+  "verify":  { "focusedRole": "AXTextField", "focusedTitle": "search", "cursor": {...} },
+  "hint":    "optional machine-readable next-step"
+}
+```
+
+On failure the shape flips to `{ok:false, command, target?, error:{code, message, retryable, hint?}}` and exit code is non-zero. A short human line also goes to stderr.
+
+**Branch on `ok` + `error.code` — never string-match `.message`.**
+
+`ErrorCode` vocabulary (stable contract):
+
+| Code | When | Retryable |
+|---|---|---|
+| `PERMISSION_DENIED` | Accessibility or Screen Recording not granted | no |
+| `INVALID_ARGUMENT` | Bad flags or values (`--button foo`, empty `--crop`, missing filters) | no |
+| `TARGET_NOT_FOUND` | `--app/--bundle/--pid` didn't match any running app | no |
+| `AMBIGUOUS_TARGET` | `--app "Claude"` matched multiple apps | no — narrow with `--bundle`/`--pid` |
+| `AX_ELEMENT_NOT_FOUND` | `--ax-path` didn't resolve in the current tree | no — re-`find` |
+| `AX_NO_FRAME` | Element located but frame is empty/hidden | no |
+| `SCK_TIMEOUT` | ScreenCaptureKit hung past the 15 s guard | **yes** |
+| `INTERNAL` | Genuine runtime/invariant failure | no |
+
+Key fields to know:
+
+- **`result`** — command-specific success payload (see [references/commands.md](references/commands.md))
+- **`verify`** — post-action state snapshot. For `click`/`type`/`key`, `verify.focusedRole` + `focusedTitle` tell you whether focus landed on the element you expected, without a follow-up `inspect`/`screenshot`. `verify.cursor` shows the actual cursor position after input.
+- **`hint`** — machine-readable next-step when kagete can infer one (e.g. `"Hit --limit (50) — narrow with --enabled-only"`). Absent when none applies.
+
+Every action command accepts `--text` (or equivalent, documented per command) to emit a terse one-liner instead of the envelope — handy for humans running commands interactively. `kagete find --paths-only` stays as plain newline-separated axPath strings for shell piping.
+
 ## Key Principles
 
-1. **Try AX first, flip to Visual on evidence.** Start with `find`. If it returns the target with a resolvable frame, use the AX path. If `find` returns `[]` for text you can see on screen, the app is custom-drawn — switch to screenshot + coords without hesitation.
-2. **Prefer `find` over `inspect`.** Most windows have 1000+ AX nodes. `find --role AXButton --title-contains "Save"` returns 1–5 hits; `inspect` returns everything.
+1. **Try AX first, flip to Visual on evidence.** Start with `find`. If `result.count == 0` for text you can see on screen, the app is custom-drawn — switch to screenshot + coords without hesitation.
+2. **Prefer `find` over `inspect --tree`.** Most windows have 1000+ AX nodes. `inspect` (default) returns a compact summary — use it only for survey. `find --role AXButton --title-contains "Save"` is the targeted query.
 3. **`axPath` beats coordinates when both exist.** Paths are stable across redraws; coords break on first resize.
-4. **For Visual, always verify with the next screenshot.** The cursor crosshair shows exactly where the last click landed. If it's above/below the intended row, adjust y by the row-height delta and click again — don't keep guessing.
+4. **Read `verify` before re-screenshotting.** For `click`/`type`/`key`, the envelope already tells you the focused element post-action. Only screenshot to confirm when `verify` is insufficient (Visual path, or cross-window state).
 5. **Activation is automatic.** Input commands call `activate()` on the target app and wait 150 ms before firing events. Pass `--no-activate` to opt out.
 6. **Events are paced internally.** Don't add `sleep` between kagete calls — 3 ms inter-event delays are already baked in.
 7. **One target per command.** Chain with `&&` in the shell; don't try to batch multiple apps in one invocation.
-8. **Output is JSON by default.** Use `--paths-only` on `find` for shell-friendly newline-separated paths.
+8. **Error-code branching, not message parsing.** `jq -e '.ok'` to gate; `jq -r '.error.code'` to route. Messages are for humans; codes are for you.
