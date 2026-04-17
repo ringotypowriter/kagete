@@ -132,7 +132,15 @@ Paths survive resizes, redraws, and theme changes. Re-run `find` if the UI's str
 
 ## Agent skill
 
-A Claude Code skill at [`skills/kagete/`](skills/kagete/) teaches LLM agents how to use kagete:
+A Claude Code skill at [`skills/kagete/`](skills/kagete/) teaches LLM agents how to use kagete.
+
+**Install with one command:**
+
+```sh
+npx skills add ringotypowriter/kagete
+```
+
+Or manually with a symlink:
 
 ```sh
 ln -s "$PWD/skills/kagete" ~/.claude/skills/kagete
