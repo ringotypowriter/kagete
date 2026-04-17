@@ -2,7 +2,7 @@ import AppKit
 import CoreGraphics
 import CoreText
 import Foundation
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 import UniformTypeIdentifiers
 
 enum Capture {
@@ -17,7 +17,9 @@ enum Capture {
                 "Screen Recording permission not granted. Run `kagete doctor --prompt` or grant it in System Settings → Privacy & Security → Screen Recording.")
         }
 
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let content = try await withSCKTimeout(seconds: 10, label: "SCShareableContent") {
+            try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        }
         let candidates = content.windows.filter {
             $0.owningApplication?.processID == pid && $0.windowLayer == 0
         }
@@ -50,8 +52,10 @@ enum Capture {
         config.capturesAudio = false
 
         let filter = SCContentFilter(desktopIndependentWindow: target)
-        var cgImage = try await SCScreenshotManager.captureImage(
-            contentFilter: filter, configuration: config)
+        var cgImage = try await withSCKTimeout(seconds: 15, label: "SCScreenshotManager.captureImage") {
+            try await SCScreenshotManager.captureImage(
+                contentFilter: filter, configuration: config)
+        }
 
         // Crop is expressed in window-relative screen points. Convert to
         // image-pixel rect (y=0 at top, same as window) and crop the captured
@@ -270,6 +274,29 @@ enum Capture {
         ctx.textPosition = CGPoint(x: nearX, y: baselineY)
         CTLineDraw(line, ctx)
         ctx.restoreGState()
+    }
+
+    /// Race an async ScreenCaptureKit call against a timeout. Apple's SCK
+    /// bridge can leak its checked continuation (prints "SWIFT TASK
+    /// CONTINUATION MISUSE") and never resume, wedging the process forever.
+    /// Converting the wedge into a surfaced error lets callers retry or fall
+    /// back instead of hanging an E2E run.
+    private static func withSCKTimeout<T: Sendable>(
+        seconds: Double, label: String, _ op: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw KageteError.failure(
+                    "\(label) timed out after \(Int(seconds))s — ScreenCaptureKit did not respond. Retry, or check if the target window is minimized / off-screen.")
+            }
+            guard let first = try await group.next() else {
+                throw KageteError.failure("\(label) produced no result.")
+            }
+            group.cancelAll()
+            return first
+        }
     }
 
     private static func writePNG(_ image: CGImage, to url: URL) throws {
