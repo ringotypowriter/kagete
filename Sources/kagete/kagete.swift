@@ -1061,7 +1061,11 @@ struct OverlayDaemonEntry: AsyncParsableCommand {
         shouldDisplay: false)
 
     func run() async throws {
-        await MainActor.run {
+        // Pin resultType to Void so the compiler doesn't infer MainActor.run<Never>
+        // and then warn that the await statement "will never be executed" — the
+        // Never-returning daemon is intentional (it installs its own NSApp
+        // runloop and terminates the process via exit).
+        await MainActor.run(resultType: Void.self) {
             OverlayDaemon.run()
         }
     }

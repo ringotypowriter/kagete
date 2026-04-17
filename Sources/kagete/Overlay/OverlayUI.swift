@@ -97,6 +97,7 @@ struct OverlayPill: View {
         case "key": return "command"
         case "scroll": return "arrow.up.arrow.down"
         case "drag": return "hand.draw"
+        case "screenshot": return "camera.viewfinder"
         default: return "bolt.fill"
         }
     }
