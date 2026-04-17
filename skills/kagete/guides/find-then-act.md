@@ -146,11 +146,12 @@ kagete click --app Finder --ax-path '/AXWindow/AXOutline/AXRow[2]'
 
 | Don't | Because |
 |---|---|
-| `kagete inspect` then `jq`/`grep` the full tree | Use `find` with filters — it's already the targeted query |
+| `kagete inspect --tree` then `jq`/`grep` everything | Use `find` with filters — it's already the targeted query. Default `inspect` returns a summary, not the firehose |
 | Hardcode pixel coordinates | They break on resize, DPI change, theme switch |
 | Cache an axPath across state-changing actions | Re-`find` after every click/nav/modal |
-| `sleep` between kagete commands | Inter-event delays are already baked in; only sleep for app-side async work |
-| Batch multiple apps in one invocation | One target per command, chain with `&&` |
+| Split a pipeline across multiple bash tool calls | Chain with `&&` in **one** invocation — lower latency, cleaner failure semantics |
+| Skip sleep between steps that trigger UI transitions | Menus, modals, network responses need a render cycle. Add `sleep 0.2`–`0.5` between the action and the next `find`/`screenshot` or you'll read stale state |
+| Batch multiple apps in one kagete invocation | One target per command; chain with `&&` within the same app |
 
 ---
 

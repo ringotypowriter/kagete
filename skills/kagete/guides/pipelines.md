@@ -4,6 +4,15 @@ Common multi-step workflows an agent can follow verbatim and adapt. Each pipelin
 
 Read [find-then-act.md](find-then-act.md) first for the primitives; this file composes them.
 
+## Execution discipline (read first)
+
+Two rules apply to every pipeline below:
+
+1. **Run the entire pipeline in one bash/exec tool call.** The blocks below are shown with one step per line for readability — when you actually run them, chain the steps with `&&` (or keep the `for` loops inline) inside a single tool invocation. Separate tool calls add latency and context overhead; a single `&&`-chained call also aborts cleanly on the first failing step.
+2. **Sleep between high-level steps, not inside them.** kagete already paces the micro-events inside each command. But after a step that triggers UI transition (menu opens, modal appears, network request returns), add a short sleep before the next `find` / `screenshot` / `click` so you read the new state, not the old one. Rules of thumb: `0.2 s` after a context menu or submenu opens, `0.3–0.5 s` after a modal or view swap, and `sleep 0.25` inside poll loops for network-bound waits. Without sleep, `find` can return the pre-transition tree and you end up acting on stale paths.
+
+Every pipeline here follows both rules.
+
 ---
 
 ## Pipeline 1 — Search in a List, Open the First Result
@@ -189,8 +198,8 @@ for i in {1..20}; do
   if [ -n "$HIT" ]; then
     # Sanity-check frame is on-screen before clicking
     ON_SCREEN=$(kagete find --app "$APP" --title-contains "quarterly-report" --enabled-only 2>/dev/null \
-                | python3 -c 'import json,sys; d=json.load(sys.stdin); f=d[0]["frame"]; print(f["y"] > 0 and f["y"] < 1200)')
-    if [ "$ON_SCREEN" = "True" ]; then
+                | jq -r '.result.hits[0].frame | (.y > 0 and .y < 1200)')
+    if [ "$ON_SCREEN" = "true" ]; then
       kagete click --app "$APP" --ax-path "$HIT" --count 2
       break
     fi
