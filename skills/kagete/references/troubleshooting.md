@@ -28,7 +28,7 @@ Our events post at `.cghidEventTap` (below session), so any session tap sees the
 - Another tool holds activation (CleanShot recording toolbar, QuickTime recorder)
 - The CLI is launched from a non-frontmost shell and the macOS 14+ activation broker rejects `NSRunningApplication.activate()`
 
-**Fix — use the AX-raise path** which bypasses the activation broker:
+**Fix — use the AX-raise path** which bypasses the activation broker. This is now the default activation path; `KAGETE_RAISE=ax` remains useful when you want to force AX-only behavior:
 
 ```bash
 # Standalone — raise a window without any input
@@ -42,9 +42,10 @@ KAGETE_RAISE=ax kagete click --app TextEdit --ax-path '…/AXButton[title="Save"
 
 | Value | Activation path |
 |---|---|
-| unset / `app` | `NSRunningApplication.activate()` — default, works for most cases |
+| unset / `auto` | AX raise first, then `app.activate()` only if AX raise couldn't take effect |
 | `ax` | `AXFrontmost` + `AXRaise(window)` — bypasses activation broker |
-| `both` | AX raise first, then `app.activate()` as a belt-and-braces fallback |
+| `app` | `NSRunningApplication.activate()` only |
+| `both` | AX raise first, then `app.activate()` unconditionally |
 
 ## Permission errors appear mid-run
 

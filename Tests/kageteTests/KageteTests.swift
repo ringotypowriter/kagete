@@ -122,3 +122,81 @@ import Testing
         }
     }
 }
+
+@Suite struct ClickPlanningTests {
+    @Test func coordinateClickWithTargetResolvesForActivation() throws {
+        #expect(Click.shouldResolveTarget(
+            axPath: nil,
+            target: try TargetOptions.parse(["--app", "TextEdit"]),
+            activate: true))
+    }
+
+    @Test func coordinateClickWithoutTargetSkipsResolution() throws {
+        #expect(!Click.shouldResolveTarget(
+            axPath: nil,
+            target: try TargetOptions.parse([]),
+            activate: true))
+    }
+
+    @Test func coordinateClickWithNoActivateSkipsResolution() throws {
+        #expect(!Click.shouldResolveTarget(
+            axPath: nil,
+            target: try TargetOptions.parse(["--bundle", "com.apple.TextEdit"]),
+            activate: false))
+    }
+
+    @Test func axPathClickAlwaysResolvesTarget() throws {
+        #expect(Click.shouldResolveTarget(
+            axPath: "/AXWindow/AXButton[title=\"Save\"]",
+            target: try TargetOptions.parse([]),
+            activate: false))
+    }
+}
+
+@Suite struct ActivatorMethodTests {
+    @Test func defaultMethodIsAutoRaise() {
+        #expect(Activator.method(for: nil) == .auto)
+        #expect(Activator.method(for: "bogus") == .auto)
+    }
+
+    @Test func explicitMethodOverridesStillParse() {
+        #expect(Activator.method(for: "app") == .app)
+        #expect(Activator.method(for: "ax") == .ax)
+        #expect(Activator.method(for: "both") == .both)
+    }
+}
+
+@Suite struct InputMouseEventTests {
+    @Test func mouseClickEventCarriesClickStateAndEventNumber() throws {
+        let source = try Input.makeEventSource()
+        let event = try #require(Input.makeMouseClickEvent(
+            source: source,
+            type: .leftMouseDown,
+            point: CGPoint(x: 10, y: 20),
+            button: .left,
+            clickState: 2,
+            eventNumber: 42,
+            pressure: 1))
+
+        #expect(event.getIntegerValueField(.mouseEventClickState) == 2)
+        #expect(event.getIntegerValueField(.mouseEventNumber) == 42)
+        #expect(event.getDoubleValueField(.mouseEventPressure) == 1)
+    }
+
+    @Test func mouseClickEventPreservesButtonAndPosition() throws {
+        let source = try Input.makeEventSource()
+        let point = CGPoint(x: 120, y: 240)
+        let event = try #require(Input.makeMouseClickEvent(
+            source: source,
+            type: .rightMouseUp,
+            point: point,
+            button: .right,
+            clickState: 1,
+            eventNumber: 7,
+            pressure: 0))
+
+        #expect(event.location.x == point.x)
+        #expect(event.location.y == point.y)
+        #expect(event.getIntegerValueField(.mouseEventButtonNumber) == Int64(CGMouseButton.right.rawValue))
+    }
+}

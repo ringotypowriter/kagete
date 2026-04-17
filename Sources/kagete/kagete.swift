@@ -278,23 +278,30 @@ struct Click: AsyncParsableCommand {
     @Flag(name: .long, help: "Print a small JSON report describing how the click was dispatched.")
     var json: Bool = false
 
+    static func shouldResolveTarget(axPath: String?, target: TargetOptions, activate: Bool) -> Bool {
+        axPath != nil || (activate && target.hasAppSelector)
+    }
+
     func run() async throws {
         guard let mb = MouseButton(rawValue: button.lowercased()) else {
             throw KageteError.failure("Unknown --button \(button). Use left/right/middle.")
         }
 
         let point: CGPoint
-        var appLabel: String? = nil
+        let resolvedTarget = Self.shouldResolveTarget(
+            axPath: axPath,
+            target: target,
+            activate: activate) ? try TargetResolver.resolve(target) : nil
+        let appLabel = resolvedTarget?.app.localizedName
         var element: AXUIElement? = nil
         var elementActions: [String] = []
         if let ax = axPath {
-            let resolved = try TargetResolver.resolve(target)
-            appLabel = resolved.app.localizedName
-            if activate {
-                try await Activator.activate(resolved)
+            guard let resolvedTarget else {
+                throw KageteError.failure("Internal error: missing resolved target for AX click.")
             }
+            try await Activator.activate(resolvedTarget)
             let el = try AXInspector.locate(
-                pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: ax)
+                pid: resolvedTarget.pid, windowFilter: resolvedTarget.windowFilter, axPath: ax)
             element = el
             elementActions = AXInspector.actionNames(el)
             guard let center = AXInspector.screenCenter(of: el) else {
@@ -302,6 +309,9 @@ struct Click: AsyncParsableCommand {
             }
             point = center
         } else if let cx = x, let cy = y {
+            if activate, let resolvedTarget {
+                try await Activator.activate(resolvedTarget)
+            }
             point = CGPoint(x: cx, y: cy)
         } else {
             throw KageteError.failure("Provide --ax-path (with --app/--bundle/--pid) or --x/--y.")

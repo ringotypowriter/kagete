@@ -16,6 +16,10 @@ enum AXRaise {
         let raisedWindow: Bool
         let setMain: Bool
         let frontmostAfter: String?
+
+        var changedFocus: Bool {
+            setFrontmost || raisedWindow || setMain
+        }
     }
 
     @discardableResult
@@ -53,20 +57,28 @@ enum AXRaise {
 /// Picks between AX-raise and `NSRunningApplication.activate()` at runtime.
 ///
 /// `KAGETE_RAISE` env var:
+/// - `auto` — AX frontmost + window raise first, fall back to `app.activate()` if needed
 /// - `ax`   — AX frontmost + window raise only
-/// - `app`  — classic `NSRunningApplication.activate()` only (today's default)
-/// - `both` — try AX raise first, then `app.activate()` as a fallback
-/// - unset / anything else → `app` (unchanged default behavior)
+/// - `app`  — classic `NSRunningApplication.activate()` only
+/// - `both` — always do both: AX raise first, then `app.activate()`
+/// - unset / anything else → `auto`
 enum Activator {
-    enum Method: String { case ax, app, both }
+    enum Method: String { case auto, ax, app, both }
 
     static var method: Method {
-        let raw = ProcessInfo.processInfo.environment["KAGETE_RAISE"]?.lowercased() ?? ""
-        return Method(rawValue: raw) ?? .app
+        method(for: ProcessInfo.processInfo.environment["KAGETE_RAISE"])
+    }
+
+    static func method(for rawValue: String?) -> Method {
+        Method(rawValue: rawValue?.lowercased() ?? "") ?? .auto
     }
 
     static func activate(_ target: ResolvedTarget) async throws {
         switch method {
+        case .auto:
+            if !autoRaise(target) {
+                target.app.activate()
+            }
         case .app:
             target.app.activate()
         case .ax:
@@ -76,5 +88,19 @@ enum Activator {
             target.app.activate()
         }
         try await Task.sleep(nanoseconds: 150_000_000)
+    }
+
+    private static func autoRaise(_ target: ResolvedTarget) -> Bool {
+        do {
+            let report = try AXRaise.raise(pid: target.pid, windowFilter: target.windowFilter)
+            return report.changedFocus
+        } catch let error as KageteError {
+            switch error {
+            case .notTrusted, .notFound, .ambiguous, .failure:
+                return false
+            }
+        } catch {
+            return false
+        }
     }
 }

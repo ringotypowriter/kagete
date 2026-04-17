@@ -62,6 +62,10 @@ struct TargetOptions: ParsableArguments {
 
     @Option(name: .long, help: "Window title substring (case-insensitive).")
     var window: String?
+
+    var hasAppSelector: Bool {
+        bundle != nil || app != nil || pid != nil
+    }
 }
 
 struct ResolvedTarget {

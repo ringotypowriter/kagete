@@ -32,31 +32,55 @@ enum Input {
     /// keyboard events with Unicode payloads. 3ms is empirically enough.
     static let interEventDelayMicros: UInt32 = 3_000
 
+    /// Gap between distinct clicks (µs). Some apps, especially custom
+    /// web-backed views, miss "machine-gun" double-clicks that arrive too
+    /// quickly even if the click-state increments correctly. 180 ms stays
+    /// comfortably within the normal macOS double-click window while matching
+    /// a more human cadence.
+    static let interClickDelayMicros: UInt32 = 180_000
+
     static func click(at point: CGPoint, button: MouseButton = .left, count: Int = 1) throws {
         try ensureAccessibility()
-        moveCursor(to: point)
+        let source = try makeEventSource()
+        moveCursor(to: point, source: source)
         usleep(interEventDelayMicros)
-        for i in 1...max(1, count) {
-            if let down = CGEvent(
-                mouseEventSource: nil,
-                mouseType: button.downType,
-                mouseCursorPosition: point,
-                mouseButton: button.cg)
+
+        let clicks = max(1, count)
+        let firstEventNumber = Int64(CGEventSource.counterForEventType(
+            .hidSystemState,
+            eventType: button.downType)) + 1
+        for click in 1...clicks {
+            let eventNumber = firstEventNumber + Int64(click - 1)
+            if let down = Self.makeMouseClickEvent(
+                source: source,
+                type: button.downType,
+                point: point,
+                button: button,
+                clickState: click,
+                eventNumber: eventNumber,
+                pressure: 1)
             {
-                down.setIntegerValueField(.mouseEventClickState, value: Int64(i))
                 down.post(tap: .cghidEventTap)
             }
             usleep(interEventDelayMicros)
-            if let up = CGEvent(
-                mouseEventSource: nil,
-                mouseType: button.upType,
-                mouseCursorPosition: point,
-                mouseButton: button.cg)
+
+            if let up = Self.makeMouseClickEvent(
+                source: source,
+                type: button.upType,
+                point: point,
+                button: button,
+                clickState: click,
+                eventNumber: eventNumber,
+                pressure: 0)
             {
-                up.setIntegerValueField(.mouseEventClickState, value: Int64(i))
                 up.post(tap: .cghidEventTap)
             }
-            usleep(interEventDelayMicros)
+
+            // Only pause *between* clicks — sleeping after the final up
+            // is wasteful and slows down the caller for no benefit.
+            if click < clicks {
+                usleep(interClickDelayMicros)
+            }
         }
     }
 
@@ -105,11 +129,12 @@ enum Input {
         modifiers: CGEventFlags = []
     ) throws {
         try ensureAccessibility()
-        moveCursor(to: start)
+        let source = try makeEventSource()
+        moveCursor(to: start, source: source)
         usleep(interEventDelayMicros)
 
         if let down = CGEvent(
-            mouseEventSource: nil,
+            mouseEventSource: source,
             mouseType: .leftMouseDown,
             mouseCursorPosition: start,
             mouseButton: .left)
@@ -126,7 +151,7 @@ enum Input {
                 x: start.x + (end.x - start.x) * t,
                 y: start.y + (end.y - start.y) * t)
             if let ev = CGEvent(
-                mouseEventSource: nil,
+                mouseEventSource: source,
                 mouseType: .leftMouseDragged,
                 mouseCursorPosition: p,
                 mouseButton: .left)
@@ -138,7 +163,7 @@ enum Input {
         }
 
         if let up = CGEvent(
-            mouseEventSource: nil,
+            mouseEventSource: source,
             mouseType: .leftMouseUp,
             mouseCursorPosition: end,
             mouseButton: .left)
@@ -165,9 +190,37 @@ enum Input {
         usleep(interEventDelayMicros)
     }
 
-    private static func moveCursor(to point: CGPoint) {
+    static func makeEventSource() throws -> CGEventSource {
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            throw KageteError.failure("Failed to create mouse event source.")
+        }
+        return source
+    }
+
+    static func makeMouseClickEvent(
+        source: CGEventSource,
+        type: CGEventType,
+        point: CGPoint,
+        button: MouseButton,
+        clickState: Int,
+        eventNumber: Int64,
+        pressure: Double
+    ) -> CGEvent? {
+        guard let event = CGEvent(
+            mouseEventSource: source,
+            mouseType: type,
+            mouseCursorPosition: point,
+            mouseButton: button.cg)
+        else { return nil }
+        event.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
+        event.setIntegerValueField(.mouseEventNumber, value: eventNumber)
+        event.setDoubleValueField(.mouseEventPressure, value: pressure)
+        return event
+    }
+
+    private static func moveCursor(to point: CGPoint, source: CGEventSource? = nil) {
         if let move = CGEvent(
-            mouseEventSource: nil,
+            mouseEventSource: source,
             mouseType: .mouseMoved,
             mouseCursorPosition: point,
             mouseButton: .left)
