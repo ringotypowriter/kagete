@@ -46,7 +46,7 @@ enum Capture {
         let config = SCStreamConfiguration()
         config.width = max(1, Int(target.frame.width * scale))
         config.height = max(1, Int(target.frame.height * scale))
-        config.showsCursor = false
+        config.showsCursor = true
         config.capturesAudio = false
 
         let filter = SCContentFilter(desktopIndependentWindow: target)
@@ -144,6 +144,34 @@ enum Capture {
         }
         ctx.strokePath()
 
+        // Cursor indicator — draws a crosshair where the cursor currently is
+        // (in-window) so the agent can see exactly where its last click
+        // landed. When the cursor is outside the captured region, we still
+        // draw a corner badge with its coords so the agent is never in the
+        // dark about the actual click target.
+        let cursor = CGEvent(source: nil)?.location ?? .zero
+        let cursorRelX = (cursor.x - windowOrigin.x) * pxPerPt
+        let cursorRelY = (cursor.y - windowOrigin.y) * pxPerPt
+        let cursorInside =
+            cursorRelX >= 0 && cursorRelX <= CGFloat(pxW)
+            && cursorRelY >= 0 && cursorRelY <= CGFloat(pxH)
+        if cursorInside {
+            let cx = cursorRelX
+            let cy = h - cursorRelY
+            let r: CGFloat = 14
+            ctx.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.9))
+            ctx.setLineWidth(3)
+            ctx.strokeEllipse(in: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
+            ctx.setStrokeColor(CGColor(red: 1.0, green: 0.0, blue: 0.5, alpha: 1.0))
+            ctx.setLineWidth(2)
+            ctx.strokeEllipse(in: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
+            ctx.move(to: CGPoint(x: cx - r - 6, y: cy))
+            ctx.addLine(to: CGPoint(x: cx + r + 6, y: cy))
+            ctx.move(to: CGPoint(x: cx, y: cy - r - 6))
+            ctx.addLine(to: CGPoint(x: cx, y: cy + r + 6))
+            ctx.strokePath()
+        }
+
         // Label sizing — scale font down when cells are tight so
         // neighbouring labels don't overrun each other. A cell roughly
         // `pitch*pxPerPt` wide needs to fit a ~5-char label like "x=2200".
@@ -183,6 +211,34 @@ enum Capture {
             }
             gy += pitch
         }
+
+        // Cursor coords badge — bottom-right corner. Shows the current
+        // system cursor location regardless of whether it's inside the
+        // captured region, so the agent always has ground truth about where
+        // its last click actually landed.
+        let badgeText = cursorInside
+            ? "cursor: (\(Int(cursor.x)), \(Int(cursor.y)))"
+            : "cursor: (\(Int(cursor.x)), \(Int(cursor.y))) — off-window"
+        let badgeFont = CTFontCreateWithName("Menlo" as CFString, 12, nil)
+        let badgeAttrs: [NSAttributedString.Key: Any] = [
+            .font: badgeFont,
+            .foregroundColor: CGColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1.0),
+        ]
+        let badgeBg = CGColor(
+            red: cursorInside ? 1.0 : 1.0,
+            green: cursorInside ? 0.82 : 0.95,
+            blue: cursorInside ? 0.22 : 0.4,
+            alpha: 0.92)
+        let attributedBadge = NSAttributedString(string: " \(badgeText) ", attributes: badgeAttrs)
+        let badgeLine = CTLineCreateWithAttributedString(attributedBadge)
+        let badgeBounds = CTLineGetBoundsWithOptions(badgeLine, [.useOpticalBounds])
+        let badgeTopY = CGFloat(pxH) - badgeBounds.height - 10
+        drawLabelYUp(
+            badgeText,
+            nearX: CGFloat(pxW) - badgeBounds.width - 10,
+            screenTopY: badgeTopY / pxPerPt,
+            pxH: h, pxPerPt: pxPerPt,
+            attrs: badgeAttrs, bg: badgeBg, in: ctx)
 
         return ctx.makeImage()
     }
