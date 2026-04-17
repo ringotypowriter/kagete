@@ -78,6 +78,7 @@ If `--app` matches multiple running apps, kagete errors with a numbered list —
 
 - [references/commands.md](references/commands.md) — every subcommand with all flags and realistic examples
 - [references/ax-paths.md](references/ax-paths.md) — how `axPath` strings are built, sibling indexing, escaping rules
+- [references/troubleshooting.md](references/troubleshooting.md) — input-drop diagnosis, event-tap interference (CleanShot, Zoom), activation fallback via `KAGETE_RAISE=ax`
 - [guides/find-then-act.md](guides/find-then-act.md) — the canonical shell pipeline: locate → act in one flow
 - [guides/verify-loop.md](guides/verify-loop.md) — closed-loop verification with screenshots and re-queries
 

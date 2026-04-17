@@ -19,6 +19,7 @@ struct Kagete: AsyncParsableCommand {
             Scroll.self,
             Drag.self,
             Release.self,
+            Raise.self,
             Overlay.self,
             OverlayDaemonEntry.self,
         ]
@@ -239,8 +240,7 @@ struct Click: AsyncParsableCommand {
             let resolved = try TargetResolver.resolve(target)
             appLabel = resolved.app.localizedName
             if activate {
-                resolved.app.activate()
-                try await Task.sleep(nanoseconds: 150_000_000)
+                try await Activator.activate(resolved)
             }
             let el = try AXInspector.locate(
                 pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: ax)
@@ -286,8 +286,7 @@ struct TypeText: AsyncParsableCommand {
             let resolved = try TargetResolver.resolve(target)
             appLabel = resolved.app.localizedName
             if activate {
-                resolved.app.activate()
-                try await Task.sleep(nanoseconds: 150_000_000)
+                try await Activator.activate(resolved)
             }
         }
         if !noOverlay {
@@ -319,8 +318,7 @@ struct Key: AsyncParsableCommand {
             let resolved = try TargetResolver.resolve(target)
             appLabel = resolved.app.localizedName
             if activate {
-                resolved.app.activate()
-                try await Task.sleep(nanoseconds: 150_000_000)
+                try await Activator.activate(resolved)
             }
         }
         if !noOverlay {
@@ -359,8 +357,7 @@ struct Scroll: AsyncParsableCommand {
             let resolved = try TargetResolver.resolve(target)
             appLabel = resolved.app.localizedName
             if activate {
-                resolved.app.activate()
-                try await Task.sleep(nanoseconds: 150_000_000)
+                try await Activator.activate(resolved)
             }
         }
         if !noOverlay {
@@ -423,9 +420,8 @@ struct Drag: AsyncParsableCommand {
         var resolved: ResolvedTarget? = nil
         if hasTargetFlags {
             resolved = try TargetResolver.resolve(target)
-            if activate {
-                resolved?.app.activate()
-                try await Task.sleep(nanoseconds: 150_000_000)
+            if activate, let r = resolved {
+                try await Activator.activate(r)
             }
         }
 
@@ -479,6 +475,43 @@ struct Release: AsyncParsableCommand {
 
     func run() async throws {
         OverlayClient.notify(.release(label: label))
+    }
+}
+
+struct Raise: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "raise",
+        abstract: "Raise a target window via the AX API (bypasses the activation broker).")
+
+    @OptionGroup var target: TargetOptions
+
+    @Flag(name: .long, help: "Emit JSON with a post-raise report.")
+    var json: Bool = false
+
+    func run() async throws {
+        let resolved = try TargetResolver.resolve(target)
+        let report = try AXRaise.raise(pid: resolved.pid, windowFilter: resolved.windowFilter)
+        if json {
+            struct Out: Codable {
+                let app: String?
+                let setFrontmost: Bool
+                let raisedWindow: Bool
+                let setMain: Bool
+                let frontmostAfter: String?
+            }
+            try JSON.print(Out(
+                app: resolved.app.localizedName,
+                setFrontmost: report.setFrontmost,
+                raisedWindow: report.raisedWindow,
+                setMain: report.setMain,
+                frontmostAfter: report.frontmostAfter))
+        } else {
+            print("raise \(resolved.app.localizedName ?? "?") pid=\(resolved.pid)")
+            print("  AXFrontmost      : \(report.setFrontmost ? "set" : "FAILED")")
+            print("  AXRaise(window)  : \(report.raisedWindow ? "ok" : "FAILED")")
+            print("  AXMain(window)   : \(report.setMain ? "set" : "FAILED")")
+            print("  frontmost after  : \(report.frontmostAfter ?? "?")")
+        }
     }
 }
 
