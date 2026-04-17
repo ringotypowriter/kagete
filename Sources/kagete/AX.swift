@@ -332,6 +332,60 @@ enum AXInspector {
         return (b.role, b.title)
     }
 
+    /// Compact overview of a window's AX tree — designed so agents can decide
+    /// whether to drill in via `find` or ask for the full tree via
+    /// `inspect --tree`. Avoids dumping tens of thousands of nodes by default.
+    static func summarize(
+        pid: pid_t, windowFilter: String?, maxDepth: Int,
+        actionableSampleLimit: Int = 20
+    ) throws -> InspectSummary {
+        let chosen = try selectWindow(pid: pid, windowFilter: windowFilter)
+        let rootBundle = bundle(for: chosen)
+        let rootSeg = pathSegment(
+            role: rootBundle.role, title: rootBundle.title,
+            identifier: rootBundle.identifier)
+
+        var total = 0
+        var withContent = 0
+        var roleHist: [String: Int] = [:]
+        var actionable: [ActionableSample] = []
+
+        _ = traverse(
+            chosen, bundle: rootBundle, path: "/\(rootSeg)",
+            depth: 0, maxDepth: maxDepth
+        ) { el, b, path in
+            total += 1
+            if let r = b.role { roleHist[r, default: 0] += 1 }
+            let contentful: (String?) -> Bool = { ($0?.isEmpty == false) }
+            if contentful(b.title) || contentful(b.valueString) || contentful(b.description)
+                || contentful(b.identifier) { withContent += 1 }
+            if actionable.count < actionableSampleLimit {
+                let acts = actionNames(el)
+                if acts.contains(kAXPressAction) || acts.contains(kAXIncrementAction)
+                    || acts.contains(kAXDecrementAction)
+                {
+                    actionable.append(ActionableSample(
+                        axPath: path, role: b.role, title: b.title,
+                        actions: acts))
+                }
+            }
+            return true
+        }
+
+        let focusedAxPath: String? = nil
+
+        return InspectSummary(
+            window: InspectSummary.WindowInfo(
+                title: rootBundle.title, role: rootBundle.role,
+                frame: rootBundle.frame),
+            totalNodes: total,
+            nodesWithContent: withContent,
+            roleHistogram: roleHist,
+            actionableCount: actionable.count,
+            actionableSample: actionable,
+            focusedAxPath: focusedAxPath)
+    }
+
     static func find(
         pid: pid_t,
         windowFilter: String?,
@@ -429,6 +483,29 @@ enum AXInspector {
             actions: acts.isEmpty ? nil : acts,
             frame: b.frame,
             axPath: path)
+    }
+}
+
+struct ActionableSample: Codable {
+    let axPath: String
+    let role: String?
+    let title: String?
+    let actions: [String]
+}
+
+struct InspectSummary: Codable {
+    let window: WindowInfo
+    let totalNodes: Int
+    let nodesWithContent: Int
+    let roleHistogram: [String: Int]
+    let actionableCount: Int
+    let actionableSample: [ActionableSample]
+    let focusedAxPath: String?
+
+    struct WindowInfo: Codable {
+        let title: String?
+        let role: String?
+        let frame: BoundsJSON?
     }
 }
 

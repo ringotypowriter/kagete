@@ -103,25 +103,60 @@ struct Windows: AsyncParsableCommand {
 struct Inspect: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "inspect",
-        abstract: "Dump the AX element tree of a target window as JSON (compact by default).")
+        abstract: "Summarize the AX tree of a target window (use --tree for the full dump).")
 
     @OptionGroup var target: TargetOptions
 
     @Option(name: .long, help: "Maximum tree depth to descend.")
     var maxDepth: Int = 12
 
-    @Flag(name: .long, help: "Emit the full raw tree without pruning unlabeled AXUnknown nodes.")
+    @Flag(name: .long, help: "Emit the full AX node tree instead of a summary. Combine with --with-actions to include per-node AX actions.")
+    var tree: Bool = false
+
+    @Flag(name: .long, help: "With --tree: emit the full raw tree without pruning unlabeled AXUnknown nodes.")
     var full: Bool = false
 
-    @Flag(name: .long, help: "Include AX action names per node (extra IPC per element — slow on large trees).")
+    @Flag(name: .long, help: "With --tree: include AX action names per node (extra IPC per element — slow on large trees).")
     var withActions: Bool = false
 
     func run() async throws {
+        do {
+            try runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                InspectSummary.self, command: "inspect",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() throws {
         let resolved = try TargetResolver.resolve(target)
-        let node = try AXInspector.inspect(
+        if tree {
+            let node = try AXInspector.inspect(
+                pid: resolved.pid, windowFilter: resolved.windowFilter,
+                maxDepth: maxDepth, compact: !full, withActions: withActions)
+            try CLIOut.ok(
+                command: "inspect",
+                target: TargetJSON(resolved: resolved),
+                result: node)
+            return
+        }
+        let summary = try AXInspector.summarize(
             pid: resolved.pid, windowFilter: resolved.windowFilter,
-            maxDepth: maxDepth, compact: !full, withActions: withActions)
-        try JSON.print(node)
+            maxDepth: maxDepth)
+        let hint: String?
+        if summary.actionableCount == 0 {
+            hint = "No AXPress/Increment/Decrement elements found — the window may use custom-drawn UI; consider Visual path (screenshot + coord click)."
+        } else if summary.totalNodes > 200 {
+            hint = "Large tree (\(summary.totalNodes) nodes). Use `kagete find` with --role/--title to drill in, or `inspect --tree` for the full dump."
+        } else {
+            hint = "Use `kagete find` to target specific elements, or `inspect --tree` for the full node tree."
+        }
+        try CLIOut.ok(
+            command: "inspect",
+            target: TargetJSON(resolved: resolved),
+            result: summary, hint: hint)
     }
 }
 
@@ -165,10 +200,29 @@ struct Find: AsyncParsableCommand {
     @Option(name: .long, help: "Maximum tree depth to descend.")
     var maxDepth: Int = 64
 
-    @Flag(name: .long, help: "Emit only axPath strings, one per line.")
+    @Flag(name: .long, help: "Emit only axPath strings, one per line (plain text, not an envelope).")
     var pathsOnly: Bool = false
 
+    struct FindResult: Codable {
+        let count: Int
+        let truncated: Bool
+        let limit: Int
+        let disabledCount: Int
+        let hits: [AXHit]
+    }
+
     func run() async throws {
+        do {
+            try runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                FindResult.self, command: "find",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() throws {
         let criteria = FindCriteria(
             role: role, subrole: subrole, title: title,
             titleContains: titleContains, identifier: identifier,
@@ -185,9 +239,35 @@ struct Find: AsyncParsableCommand {
 
         if pathsOnly {
             for h in hits { print(h.axPath) }
-        } else {
-            try JSON.print(hits)
+            return
         }
+
+        let disabled = hits.filter { $0.enabled == false }.count
+        let truncated = hits.count >= limit
+        let result = FindResult(
+            count: hits.count,
+            truncated: truncated,
+            limit: limit,
+            disabledCount: disabled,
+            hits: hits)
+
+        let hint: String?
+        if hits.isEmpty {
+            hint = "No matches. Try broader filters (--title-contains, --role) or `inspect` the window to survey what's there."
+        } else if truncated {
+            hint = "Hit --limit (\(limit)). Narrow with --enabled-only / --title-contains to see the rest."
+        } else if hits.count == 1, hits[0].actions?.contains(kAXPressAction) == true {
+            hint = "One AXPress hit — pass its axPath to `kagete click --ax-path`."
+        } else if disabled > 0, !enabledOnly {
+            hint = "\(disabled) of \(hits.count) hits are AXDisabled — add --enabled-only to filter them out."
+        } else {
+            hint = nil
+        }
+
+        try CLIOut.ok(
+            command: "find",
+            target: TargetJSON(resolved: resolved),
+            result: result, hint: hint)
     }
 }
 
