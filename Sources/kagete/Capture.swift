@@ -9,7 +9,8 @@ enum Capture {
     static func screenshot(
         pid: pid_t, windowFilter: String?, output: URL,
         grid: Bool = false, gridPitch: CGFloat = 200,
-        captureScale: CGFloat = 0.5
+        captureScale: CGFloat = 0.5,
+        crop: CGRect? = nil
     ) async throws {
         guard Permissions.screenRecording else {
             throw KageteError.notTrusted(
@@ -52,6 +53,27 @@ enum Capture {
         var cgImage = try await SCScreenshotManager.captureImage(
             contentFilter: filter, configuration: config)
 
+        // Crop is expressed in window-relative screen points. Convert to
+        // image-pixel rect (y=0 at top, same as window) and crop the captured
+        // CGImage. Labels below shift `windowOrigin` by the crop offset so the
+        // grid keeps showing absolute screen coords.
+        var effectiveOrigin = target.frame.origin
+        if let crop = crop {
+            let pxCrop = CGRect(
+                x: max(0, crop.origin.x * scale),
+                y: max(0, crop.origin.y * scale),
+                width: min(CGFloat(cgImage.width) - crop.origin.x * scale, crop.width * scale),
+                height: min(CGFloat(cgImage.height) - crop.origin.y * scale, crop.height * scale))
+            if pxCrop.width > 0, pxCrop.height > 0,
+               let cropped = cgImage.cropping(to: pxCrop)
+            {
+                cgImage = cropped
+                effectiveOrigin = CGPoint(
+                    x: target.frame.origin.x + crop.origin.x,
+                    y: target.frame.origin.y + crop.origin.y)
+            }
+        }
+
         if grid {
             // Core Text + CGContext bitmap drawing needs the CGS session to
             // be initialized. Hopping to the main actor is the simplest way
@@ -59,7 +81,7 @@ enum Capture {
             let annotated = await MainActor.run { () -> CGImage? in
                 overlayGrid(
                     on: cgImage,
-                    windowOrigin: target.frame.origin,
+                    windowOrigin: effectiveOrigin,
                     scale: scale,
                     pitch: gridPitch)
             }
@@ -122,10 +144,11 @@ enum Capture {
         }
         ctx.strokePath()
 
-        // Labels — Core Text is already y-up, just position at the right
-        // native coordinate. We treat "top of the cell" as a point slightly
-        // below the gridline (so labels live just inside each cell).
-        let fontSize: CGFloat = 14
+        // Label sizing — scale font down when cells are tight so
+        // neighbouring labels don't overrun each other. A cell roughly
+        // `pitch*pxPerPt` wide needs to fit a ~5-char label like "x=2200".
+        let cellPx = pitch * pxPerPt
+        let fontSize = max(9, min(14, cellPx / 5))
         let font = CTFontCreateWithName("Menlo" as CFString, fontSize, nil)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
@@ -133,24 +156,31 @@ enum Capture {
         ]
         let bg = CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.82)
 
+        // X labels along the top. Row is ~ (fontSize + 6) tall, record it so
+        // Y labels can start below it without overlapping.
+        let xRowHeight = fontSize + 6
         gx = ceil(windowOrigin.x / pitch) * pitch
         while gx <= windowOrigin.x + viewW {
             let imgX = (gx - windowOrigin.x) * pxPerPt
-            // Label sits in top-left corner of the cell (just below gridline
-            // in screen terms; so just below the top of image in y-up terms).
             drawLabelYUp(
-                "x=\(Int(gx))", nearX: imgX + 3, screenTopY: 4,
+                "x=\(Int(gx))", nearX: imgX + 3, screenTopY: 3,
                 pxH: h, pxPerPt: pxPerPt,
                 attrs: attrs, bg: bg, in: ctx)
             gx += pitch
         }
+
+        // Y labels along the left. Skip any that would land inside the
+        // X-label row (top-left collision), and nudge each label just below
+        // the gridline it belongs to.
         gy = ceil(windowOrigin.y / pitch) * pitch
         while gy <= windowOrigin.y + viewH {
             let screenRelY = (gy - windowOrigin.y) * pxPerPt
-            drawLabelYUp(
-                "y=\(Int(gy))", nearX: 4, screenTopY: screenRelY / pxPerPt + 3,
-                pxH: h, pxPerPt: pxPerPt,
-                attrs: attrs, bg: bg, in: ctx)
+            if screenRelY >= xRowHeight {
+                drawLabelYUp(
+                    "y=\(Int(gy))", nearX: 4, screenTopY: screenRelY / pxPerPt + 3,
+                    pxH: h, pxPerPt: pxPerPt,
+                    attrs: attrs, bg: bg, in: ctx)
+            }
             gy += pitch
         }
 

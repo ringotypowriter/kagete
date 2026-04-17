@@ -210,21 +210,36 @@ struct Screenshot: AsyncParsableCommand {
     @Option(name: .long, help: "Output pixel scale relative to screen points (default 0.5 for agent consumption; 1 for native; 2 for retina).")
     var scale: Double = 0.5
 
+    @Option(name: .long, help: "Crop to a window-relative region: \"x,y,w,h\" in screen points (e.g. \"400,200,800,600\"). Labels still show absolute screen coords.")
+    var crop: String?
+
     func run() async throws {
-        // Bootstrap AppKit's CGS session before any Core Text / bitmap-context
-        // work runs inside overlayGrid. Touching NSApplication.shared on the
-        // main actor is the one reliable init path from a CLI.
-        if !clean {
-            await MainActor.run { _ = NSApplication.shared }
-        }
+        // Bootstrap AppKit's CGS session so Core Text / bitmap-context work
+        // and the PNG writer both have what they need. Touching
+        // NSApplication.shared on the main actor is the reliable init path
+        // from an async CLI.
+        await MainActor.run { _ = NSApplication.shared }
         let resolved = try TargetResolver.resolve(target)
         let url = URL(fileURLWithPath: output).absoluteURL
+
+        var cropRect: CGRect? = nil
+        if let c = crop {
+            let parts = c.split(separator: ",")
+                .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            guard parts.count == 4, parts[2] > 0, parts[3] > 0 else {
+                throw KageteError.failure(
+                    "--crop expects \"x,y,w,h\" with positive w and h (got \"\(c)\").")
+            }
+            cropRect = CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
+        }
+
         try await Capture.screenshot(
             pid: resolved.pid, windowFilter: resolved.windowFilter,
             output: url,
             grid: !clean,
             gridPitch: CGFloat(gridPitch),
-            captureScale: CGFloat(scale))
+            captureScale: CGFloat(scale),
+            crop: cropRect)
         print(url.path)
     }
 }
