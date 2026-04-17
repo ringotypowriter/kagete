@@ -32,14 +32,15 @@ for dep in curl tar shasum xattr; do
 done
 
 # --- discover latest release ----------------------------------------------
+# Follow the /releases/latest redirect to /releases/tag/<TAG> — skips the
+# GitHub API (60 req/hour unauth limit per IP), just uses HTTP redirects.
 
-TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | grep '"tag_name":' \
-    | head -1 \
-    | cut -d'"' -f4)"
+TAG_URL="$(curl -sSLo /dev/null -w '%{url_effective}' \
+    "https://github.com/$REPO/releases/latest")"
+TAG="${TAG_URL##*/}"
 
-if [[ -z "$TAG" ]]; then
-    echo "✗ could not determine latest release tag" >&2
+if [[ -z "$TAG" || "$TAG" == "latest" ]]; then
+    echo "✗ could not determine latest release tag (is there a published release?)" >&2
     exit 1
 fi
 
