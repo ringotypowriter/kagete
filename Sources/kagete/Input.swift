@@ -97,6 +97,58 @@ enum Input {
         }
     }
 
+    static func drag(
+        from start: CGPoint,
+        to end: CGPoint,
+        steps: Int = 20,
+        holdMicros: UInt32 = 0,
+        modifiers: CGEventFlags = []
+    ) throws {
+        try ensureAccessibility()
+        moveCursor(to: start)
+        usleep(interEventDelayMicros)
+
+        if let down = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseDown,
+            mouseCursorPosition: start,
+            mouseButton: .left)
+        {
+            down.flags = modifiers
+            down.post(tap: .cghidEventTap)
+        }
+        if holdMicros > 0 { usleep(holdMicros) } else { usleep(interEventDelayMicros) }
+
+        let n = max(1, steps)
+        for i in 1...n {
+            let t = Double(i) / Double(n)
+            let p = CGPoint(
+                x: start.x + (end.x - start.x) * t,
+                y: start.y + (end.y - start.y) * t)
+            if let ev = CGEvent(
+                mouseEventSource: nil,
+                mouseType: .leftMouseDragged,
+                mouseCursorPosition: p,
+                mouseButton: .left)
+            {
+                ev.flags = modifiers
+                ev.post(tap: .cghidEventTap)
+            }
+            usleep(interEventDelayMicros)
+        }
+
+        if let up = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: end,
+            mouseButton: .left)
+        {
+            up.flags = modifiers
+            up.post(tap: .cghidEventTap)
+        }
+        usleep(interEventDelayMicros)
+    }
+
     static func key(_ combo: KeyCombo) throws {
         try ensureAccessibility()
         guard

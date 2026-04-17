@@ -41,6 +41,22 @@ enum KeyCodes {
         return KeyCombo(keyCode: code, flags: flags)
     }
 
+    /// Parse a plus-separated modifier string like "shift+cmd" into flags.
+    /// Empty input → no flags.
+    static func parseModifiers(_ combo: String) throws -> CGEventFlags {
+        var flags: CGEventFlags = []
+        let parts = combo
+            .split(separator: "+")
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        for p in parts where !p.isEmpty {
+            guard let mod = modifierFlag(p) else {
+                throw KageteError.failure("Unknown modifier: \(p).")
+            }
+            flags.insert(mod)
+        }
+        return flags
+    }
+
     private static func modifierFlag(_ name: String) -> CGEventFlags? {
         switch name {
         case "cmd", "command", "meta": return .maskCommand

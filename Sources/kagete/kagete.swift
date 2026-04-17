@@ -17,6 +17,7 @@ struct Kagete: AsyncParsableCommand {
             TypeText.self,
             Key.self,
             Scroll.self,
+            Drag.self,
         ]
     )
 }
@@ -328,5 +329,95 @@ struct Scroll: AsyncParsableCommand {
             }
         }
         try Input.scroll(dx: dx, dy: dy, lines: !pixels)
+    }
+}
+
+struct Drag: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "drag",
+        abstract: "Drag from one point (or AX element) to another.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "Source AX path.")
+    var fromAxPath: String?
+
+    @Option(name: .long, help: "Target AX path.")
+    var toAxPath: String?
+
+    @Option(name: .long, help: "Source x (screen points).")
+    var fromX: Double?
+
+    @Option(name: .long, help: "Source y (screen points).")
+    var fromY: Double?
+
+    @Option(name: .long, help: "Target x (screen points).")
+    var toX: Double?
+
+    @Option(name: .long, help: "Target y (screen points).")
+    var toY: Double?
+
+    @Option(name: .long, help: "Number of interpolation steps.")
+    var steps: Int = 20
+
+    @Option(name: .long, help: "Press-and-hold duration before dragging (ms).")
+    var holdMs: Int = 0
+
+    @Option(name: .long, help: "Modifier flags, e.g. \"shift\" or \"cmd+alt\".")
+    var mod: String = ""
+
+    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app first.")
+    var activate: Bool = true
+
+    func run() async throws {
+        let modifiers = try KeyCodes.parseModifiers(mod)
+        let hasTargetFlags = target.app != nil || target.bundle != nil || target.pid != nil
+
+        if fromAxPath != nil || toAxPath != nil {
+            guard hasTargetFlags else {
+                throw KageteError.failure("--from-ax-path / --to-ax-path require --app/--bundle/--pid.")
+            }
+        }
+
+        var resolved: ResolvedTarget? = nil
+        if hasTargetFlags {
+            resolved = try TargetResolver.resolve(target)
+            if activate {
+                resolved?.app.activate()
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+
+        let start = try resolvePoint(
+            axPath: fromAxPath, x: fromX, y: fromY, resolved: resolved, label: "source")
+        let end = try resolvePoint(
+            axPath: toAxPath, x: toX, y: toY, resolved: resolved, label: "target")
+
+        try Input.drag(
+            from: start, to: end,
+            steps: steps,
+            holdMicros: UInt32(max(0, holdMs) * 1000),
+            modifiers: modifiers)
+    }
+
+    private func resolvePoint(
+        axPath: String?, x: Double?, y: Double?,
+        resolved: ResolvedTarget?, label: String
+    ) throws -> CGPoint {
+        if let ax = axPath {
+            guard let r = resolved else {
+                throw KageteError.failure("--\(label)-ax-path requires --app/--bundle/--pid.")
+            }
+            let el = try AXInspector.locate(
+                pid: r.pid, windowFilter: r.windowFilter, axPath: ax)
+            guard let c = AXInspector.screenCenter(of: el) else {
+                throw KageteError.failure("\(label) element has no resolvable frame.")
+            }
+            return c
+        }
+        if let cx = x, let cy = y {
+            return CGPoint(x: cx, y: cy)
+        }
+        throw KageteError.failure("Provide --\(label)-ax-path or --\(label)-x/--\(label)-y.")
     }
 }

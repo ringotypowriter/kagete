@@ -104,4 +104,21 @@ import Testing
             _ = try KeyCodes.parse("a+b")
         }
     }
+
+    @Test func parsesModifiersOnly() throws {
+        let flags = try KeyCodes.parseModifiers("shift+cmd")
+        #expect(flags.contains(.maskShift))
+        #expect(flags.contains(.maskCommand))
+    }
+
+    @Test func emptyModifierStringYieldsNoFlags() throws {
+        let flags = try KeyCodes.parseModifiers("")
+        #expect(flags == [])
+    }
+
+    @Test func modifierParserRejectsUnknown() {
+        #expect(throws: KageteError.self) {
+            _ = try KeyCodes.parseModifiers("shift+bogus")
+        }
+    }
 }
