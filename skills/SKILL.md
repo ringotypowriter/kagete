@@ -1,7 +1,7 @@
 ---
 name: kagete
-description: macOS computer-use CLI for agents. Use when the user wants to inspect, click, type, drag, scroll, or screenshot native macOS app windows — Safari, Finder, TextEdit, Xcode, Slack desktop, System Settings, any AppKit/Catalyst/SwiftUI app. Triggers include "click the Save button in X", "automate Finder", "read the AX tree of Y", "screenshot Xcode window", "type into TextEdit", "drag to reorder in Z", and any GUI task outside a browser. If the `kagete` binary is not on PATH, this skill does not apply — fall back to explaining, or ask the user to install.
-allowed-tools: Bash(kagete:*)
+description: macOS computer-use CLI for agents. Use when the user wants to inspect, click, type, drag, scroll, or screenshot native macOS app windows — Safari, Finder, TextEdit, Xcode, Slack desktop, System Settings, any AppKit/Catalyst/SwiftUI app. Triggers include "click the Save button in X", "automate Finder", "read the AX tree of Y", "screenshot Xcode window", "type into TextEdit", "drag to reorder in Z", and any GUI task outside a browser. If the `kagete` binary is not on PATH, offer to install it with the one-liner in the Install section below.
+allowed-tools: Bash(kagete:*), Bash(curl:*)
 ---
 
 # kagete — macOS computer-use CLI
@@ -12,6 +12,16 @@ kagete gives agents **eyes and hands** for any macOS application through the Acc
 - **Hands:** `click` · `type` · `key` · `scroll` · `drag`
 
 All output is JSON or newline-separated paths — designed for shell composition.
+
+## Install
+
+If `command -v kagete` returns nothing, run the one-liner (requires macOS 14+, Apple Silicon):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ringotypowriter/kagete/main/install.sh | bash
+```
+
+Installs to `~/.local/bin/kagete`. The installer follows a GitHub redirect (no API token needed) and verifies SHA256 before install. After install, if `~/.local/bin` isn't on PATH, the installer prints the exact shell-rc line to add.
 
 ## Preflight
 
