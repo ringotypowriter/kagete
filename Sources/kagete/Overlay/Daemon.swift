@@ -33,8 +33,7 @@ final class OverlayDaemon {
 
     func start() {
         // Install the overlay window first so even the first message renders fast.
-        let (w, _) = OverlayWindow.install(state: state)
-        self.window = w
+        self.window = OverlayWindow.install(state: state)
         state.mode = .active
         state.label = "ready"
 
@@ -145,18 +144,17 @@ final class OverlayDaemon {
         lastActivityAt = Date()
         let seq = activitySeq
 
+        if let w = window { OverlayWindow.followCursor(w, state: state) }
         state.app = p.app
         state.label = p.label
         state.mode = .pulse
         state.visible = true
-        relinquishActivation()
 
         let selfRef = self
         Self.runOnMain(after: OverlayConfig.pulseDuration) {
             guard selfRef.activitySeq == seq else { return }
             selfRef.state.mode = .active
             selfRef.state.label = "waiting"
-            selfRef.relinquishActivation()
         }
     }
 
@@ -165,16 +163,7 @@ final class OverlayDaemon {
         state.mode = .released
         state.label = label.isEmpty ? "control returned" : label
         state.visible = true
-        relinquishActivation()
         scheduleExit(after: OverlayConfig.releaseDuration)
-    }
-
-    /// Ensure the daemon app is never the active app. If we accidentally
-    /// stole activation during a SwiftUI re-render, hand it back immediately.
-    private func relinquishActivation() {
-        if NSApp.isActive {
-            NSApp.deactivate()
-        }
     }
 
     // MARK: - Lifecycle
