@@ -8,7 +8,7 @@ struct Kagete: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "kagete",
         abstract: "Agent computer-use CLI for macOS: inspect windows, screenshot, click, type.",
-        version: "0.1.0",
+        version: kageteVersion,
         subcommands: [
             Doctor.self,
             Windows.self,

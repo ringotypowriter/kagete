@@ -22,6 +22,13 @@ jobs:
       - name: swift version
         run: swift --version
 
+      - name: embed release version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i '' "s/__KAGETE_VERSION__/${VERSION}/" Sources/kagete/Version.swift
+          echo "embedded version: ${VERSION}"
+          grep kageteVersion Sources/kagete/Version.swift
+
       - name: build release
         run: swift build -c release --product kagete
 
