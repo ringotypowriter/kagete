@@ -1,0 +1,48 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: swift version
+        run: swift --version
+
+      - name: build release
+        run: swift build -c release --product kagete
+
+      - name: package
+        id: pkg
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          ARCH=$(uname -m)
+          PKG="kagete-${VERSION}-macos-${ARCH}.tar.gz"
+          cp .build/release/kagete kagete
+          tar czf "$PKG" kagete LICENSE README.md
+          shasum -a 256 "$PKG" > "${PKG}.sha256"
+          echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
+          echo "sha=${PKG}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.pkg.outputs.pkg }}
+            ${{ steps.pkg.outputs.sha }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
