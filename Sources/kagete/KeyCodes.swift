@@ -17,7 +17,7 @@ enum KeyCodes {
             .split(separator: "+")
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
         guard !parts.isEmpty else {
-            throw KageteError.failure("Empty key combo.")
+            throw KageteError.invalidArgument("Empty key combo.")
         }
 
         var flags: CGEventFlags = []
@@ -27,16 +27,16 @@ enum KeyCodes {
                 flags.insert(mod)
             } else {
                 if base != nil {
-                    throw KageteError.failure("Key combo has multiple base keys: \(combo).")
+                    throw KageteError.invalidArgument("Key combo has multiple base keys: \(combo).")
                 }
                 base = p
             }
         }
         guard let baseKey = base else {
-            throw KageteError.failure("Key combo \(combo) has no base key.")
+            throw KageteError.invalidArgument("Key combo \(combo) has no base key.")
         }
         guard let code = keyCode(for: baseKey) else {
-            throw KageteError.failure("Unknown key name: \(baseKey).")
+            throw KageteError.invalidArgument("Unknown key name: \(baseKey).")
         }
         return KeyCombo(keyCode: code, flags: flags)
     }
@@ -50,7 +50,7 @@ enum KeyCodes {
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
         for p in parts where !p.isEmpty {
             guard let mod = modifierFlag(p) else {
-                throw KageteError.failure("Unknown modifier: \(p).")
+                throw KageteError.invalidArgument("Unknown modifier: \(p).")
             }
             flags.insert(mod)
         }

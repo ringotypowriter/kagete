@@ -96,7 +96,7 @@ enum Activator {
             return report.changedFocus
         } catch let error as KageteError {
             switch error {
-            case .notTrusted, .notFound, .ambiguous, .failure:
+            case .notTrusted, .notFound, .ambiguous, .invalidArgument, .failure:
                 return false
             }
         } catch {

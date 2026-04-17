@@ -318,6 +318,20 @@ enum AXInspector {
         AXUIElementPerformAction(el, action as CFString) == .success
     }
 
+    /// Read the app's AXFocusedUIElement and reconstruct its role/title for a
+    /// post-action `verify` block. Best-effort — returns nil if AX says no
+    /// element is focused (common for apps whose main window is unfocused).
+    static func focusedSummary(pid: pid_t) -> (role: String?, title: String?)? {
+        let appEl = AXUIElementCreateApplication(pid)
+        var focused: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(
+            appEl, kAXFocusedUIElementAttribute as CFString, &focused)
+        guard err == .success, let ref = focused else { return nil }
+        let el = ref as! AXUIElement
+        let b = bundle(for: el)
+        return (b.role, b.title)
+    }
+
     static func find(
         pid: pid_t,
         windowFilter: String?,

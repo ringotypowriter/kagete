@@ -175,7 +175,7 @@ struct Find: AsyncParsableCommand {
             descriptionContains: descriptionContains, valueContains: valueContains,
             enabledOnly: enabledOnly, disabledOnly: disabledOnly)
         guard criteria.hasAnyFilter else {
-            throw KageteError.failure(
+            throw KageteError.invalidArgument(
                 "No filters provided. Supply at least one of --role, --title, --title-contains, --id, etc.")
         }
         let resolved = try TargetResolver.resolve(target)
@@ -227,7 +227,7 @@ struct Screenshot: AsyncParsableCommand {
             let parts = c.split(separator: ",")
                 .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             guard parts.count == 4, parts[2] > 0, parts[3] > 0 else {
-                throw KageteError.failure(
+                throw KageteError.invalidArgument(
                     "--crop expects \"x,y,w,h\" with positive w and h (got \"\(c)\").")
             }
             cropRect = CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
@@ -275,16 +275,42 @@ struct Click: AsyncParsableCommand {
     @Flag(name: .long, help: "Force CGEvent click even when the element advertises AXPress.")
     var noAxPress: Bool = false
 
-    @Flag(name: .long, help: "Print a small JSON report describing how the click was dispatched.")
-    var json: Bool = false
+    @Flag(name: .long, help: "Print only a terse one-line summary on success instead of the JSON envelope.")
+    var text: Bool = false
+
+    struct ClickResult: Codable {
+        let method: String
+        let button: String
+        let count: Int
+        let point: PointJSON
+        let element: ElementSummary?
+
+        struct ElementSummary: Codable {
+            let axPath: String
+            let role: String?
+            let title: String?
+            let actions: [String]
+        }
+    }
 
     static func shouldResolveTarget(axPath: String?, target: TargetOptions, activate: Bool) -> Bool {
         axPath != nil || (activate && target.hasAppSelector)
     }
 
     func run() async throws {
+        do {
+            try await runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                ClickResult.self, command: "click",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
         guard let mb = MouseButton(rawValue: button.lowercased()) else {
-            throw KageteError.failure("Unknown --button \(button). Use left/right/middle.")
+            throw KageteError.invalidArgument("Unknown --button \(button). Use left/right/middle.")
         }
 
         let point: CGPoint
@@ -294,6 +320,7 @@ struct Click: AsyncParsableCommand {
             activate: activate) ? try TargetResolver.resolve(target) : nil
         let appLabel = resolvedTarget?.app.localizedName
         var element: AXUIElement? = nil
+        var elementBundle: AXBundle? = nil
         var elementActions: [String] = []
         if let ax = axPath {
             guard let resolvedTarget else {
@@ -303,6 +330,7 @@ struct Click: AsyncParsableCommand {
             let el = try AXInspector.locate(
                 pid: resolvedTarget.pid, windowFilter: resolvedTarget.windowFilter, axPath: ax)
             element = el
+            elementBundle = AXInspector.bundle(for: el)
             elementActions = AXInspector.actionNames(el)
             guard let center = AXInspector.screenCenter(of: el) else {
                 throw KageteError.failure("Element at \(ax) has no resolvable frame.")
@@ -314,7 +342,7 @@ struct Click: AsyncParsableCommand {
             }
             point = CGPoint(x: cx, y: cy)
         } else {
-            throw KageteError.failure("Provide --ax-path (with --app/--bundle/--pid) or --x/--y.")
+            throw KageteError.invalidArgument("Provide --ax-path (with --app/--bundle/--pid) or --x/--y.")
         }
 
         if !noOverlay {
@@ -344,19 +372,59 @@ struct Click: AsyncParsableCommand {
             method = "cg-event"
         }
 
-        if json {
-            struct Report: Codable {
-                let method: String
-                let point: PointJSON
-                let actions: [String]?
-                let axPath: String?
-            }
-            try JSON.print(Report(
-                method: method,
-                point: PointJSON(x: Double(point.x), y: Double(point.y)),
-                actions: elementActions.isEmpty ? nil : elementActions,
-                axPath: axPath))
+        let result = ClickResult(
+            method: method,
+            button: mb.rawValue,
+            count: count,
+            point: PointJSON(x: Double(point.x), y: Double(point.y)),
+            element: axPath.map { path in
+                ClickResult.ElementSummary(
+                    axPath: path,
+                    role: elementBundle?.role,
+                    title: elementBundle?.title,
+                    actions: elementActions)
+            })
+
+        let verify = buildVerify(pid: resolvedTarget?.pid)
+        let hint = buildHint(method: method, verify: verify, hadAxPress: canAxPress)
+
+        if text {
+            let title = verify?.focusedTitle.map { " \"\($0)\"" } ?? ""
+            let role = verify?.focusedRole ?? "-"
+            print("click: \(method) @ (\(Int(point.x)),\(Int(point.y))) → focus=\(role)\(title)")
+            return
         }
+
+        try CLIOut.ok(
+            command: "click",
+            target: resolvedTarget.map { TargetJSON(resolved: $0) },
+            result: result, verify: verify, hint: hint)
+    }
+
+    private func buildVerify(pid: pid_t?) -> VerifyJSON? {
+        let cursor = CGEvent(source: nil).map {
+            PointJSON(x: Double($0.location.x), y: Double($0.location.y))
+        }
+        guard let pid else {
+            return VerifyJSON(focusedAxPath: nil, focusedRole: nil,
+                              focusedTitle: nil, cursor: cursor)
+        }
+        let f = AXInspector.focusedSummary(pid: pid)
+        return VerifyJSON(
+            focusedAxPath: nil,
+            focusedRole: f?.role,
+            focusedTitle: f?.title,
+            cursor: cursor)
+    }
+
+    private func buildHint(method: String, verify: VerifyJSON?, hadAxPress: Bool) -> String? {
+        if method == "cg-event-fallback" {
+            return "Element advertised AXPress but it failed — UI may have intercepted the event."
+        }
+        if hadAxPress, method == "ax-press", verify?.focusedRole == nil {
+            return "AXPress accepted but no focus observed — if you expected an input, a follow-up click or `type` may still be needed."
+        }
+        return nil
     }
 }
 
@@ -509,7 +577,7 @@ struct Drag: AsyncParsableCommand {
 
         if fromAxPath != nil || toAxPath != nil {
             guard hasTargetFlags else {
-                throw KageteError.failure("--from-ax-path / --to-ax-path require --app/--bundle/--pid.")
+                throw KageteError.invalidArgument("--from-ax-path / --to-ax-path require --app/--bundle/--pid.")
             }
         }
 
@@ -545,7 +613,7 @@ struct Drag: AsyncParsableCommand {
     ) throws -> CGPoint {
         if let ax = axPath {
             guard let r = resolved else {
-                throw KageteError.failure("--\(label)-ax-path requires --app/--bundle/--pid.")
+                throw KageteError.invalidArgument("--\(label)-ax-path requires --app/--bundle/--pid.")
             }
             let el = try AXInspector.locate(
                 pid: r.pid, windowFilter: r.windowFilter, axPath: ax)
@@ -557,7 +625,7 @@ struct Drag: AsyncParsableCommand {
         if let cx = x, let cy = y {
             return CGPoint(x: cx, y: cy)
         }
-        throw KageteError.failure("Provide --\(label)-ax-path or --\(label)-x/--\(label)-y.")
+        throw KageteError.invalidArgument("Provide --\(label)-ax-path or --\(label)-x/--\(label)-y.")
     }
 }
 
