@@ -39,7 +39,7 @@ struct OverlayPill: View {
                 .frame(width: 14, height: 14)
 
             HStack(spacing: 4) {
-                Text("kagete")
+                Text(OverlayConfig.brandLabel)
                     .foregroundColor(.white.opacity(0.6))
                 if let app = state.app {
                     Text("·").foregroundColor(.white.opacity(0.3))

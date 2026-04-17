@@ -36,4 +36,12 @@ enum OverlayConfig {
         let uid = getuid()
         return "/tmp/kagete-\(uid)-overlay.sock"
     }
+
+    /// Brand label shown on the overlay pill. Defaults to `"kagete"`.
+    /// Override with `KAGETE_OVERLAY_LABEL=MyAgent`.
+    static var brandLabel: String {
+        let v = ProcessInfo.processInfo.environment["KAGETE_OVERLAY_LABEL"]
+        guard let v = v, !v.isEmpty else { return "kagete" }
+        return v
+    }
 }
