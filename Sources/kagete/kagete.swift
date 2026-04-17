@@ -318,9 +318,9 @@ struct Screenshot: AsyncParsableCommand {
     var gridPitch: Double = 100
 
     @Option(name: .long, help: ArgumentHelp(
-        "Output pixel scale relative to screen points (default 0.5 for agent consumption; 1 for native; 2 for retina).",
+        "Output pixel scale relative to screen points (default 0.8 for agent consumption; 1 for native; 2 for retina).",
         visibility: .hidden))
-    var scale: Double = 0.5
+    var scale: Double = 0.8
 
     @Option(name: .long, help: "Crop to a window-relative region: \"x,y,w,h\" in screen points (e.g. \"400,200,800,600\"). Labels still show absolute screen coords.")
     var crop: String?

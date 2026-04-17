@@ -9,7 +9,7 @@ enum Capture {
     static func screenshot(
         pid: pid_t, windowFilter: String?, output: URL,
         grid: Bool = false, gridPitch: CGFloat = 200,
-        captureScale: CGFloat = 0.5,
+        captureScale: CGFloat = 0.8,
         crop: CGRect? = nil
     ) async throws {
         guard Permissions.screenRecording else {
@@ -40,10 +40,11 @@ enum Capture {
             target = candidates[0]
         }
 
-        // Downsample for agent consumption. Default captureScale=0.5 produces
-        // roughly half-dimension PNGs (~0.6 MB vs ~2.5 MB for a 2320-point
-        // window) while keeping grid labels legible. `--scale 1` restores
-        // full screen-point fidelity.
+        // Downsample for agent consumption. Default captureScale=0.8 keeps
+        // enough pixel density for agents to read small UI text and fine
+        // details while still trimming PNG size vs native 1.0. Earlier
+        // 0.5 default was too soft — agents lost legibility on icons and
+        // mid-weight Chinese / dense CJK glyphs.
         let scale = max(0.1, captureScale)
         let config = SCStreamConfiguration()
         config.width = max(1, Int(target.frame.width * scale))
