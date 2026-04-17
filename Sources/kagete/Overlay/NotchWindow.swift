@@ -37,17 +37,12 @@ final class NotchWindow: NSPanel {
 }
 
 enum OverlayWindow {
-    @MainActor
-    static func install(state: OverlayState) -> (NSWindow, NSScreen) {
-        let screen = NSScreen.builtinOrMain
-        let stripHeight: CGFloat = 140
+    private static let stripHeight: CGFloat = 140
 
-        let rect = NSRect(
-            x: screen.frame.origin.x,
-            y: screen.frame.origin.y + screen.frame.height - stripHeight,
-            width: screen.frame.width,
-            height: stripHeight
-        )
+    @MainActor
+    static func install(state: OverlayState) -> NSWindow {
+        let screen = NSScreen.cursorScreen
+        let rect = stripRect(for: screen)
 
         let window = NotchWindow(
             contentRect: rect,
@@ -57,8 +52,7 @@ enum OverlayWindow {
             screen: screen
         )
 
-        let notchHeight = max(0, screen.safeAreaInsets.top)
-        state.topPadding = notchHeight > 0 ? notchHeight + 2 : 28
+        applyPadding(for: screen, state: state)
 
         let host = NSHostingView(rootView: OverlayRoot(state: state))
         host.frame = window.contentView?.bounds ?? rect
@@ -71,21 +65,44 @@ enum OverlayWindow {
         let previouslyActive = NSWorkspace.shared.frontmostApplication
         window.orderFrontRegardless()
         previouslyActive?.activate()
-        return (window, screen)
+        return window
+    }
+
+    /// Move the window to the screen currently containing the cursor. No-op
+    /// if it's already there. Called before each pulse so the pill appears
+    /// on whichever monitor the user is working on.
+    @MainActor
+    static func followCursor(_ window: NSWindow, state: OverlayState) {
+        let screen = NSScreen.cursorScreen
+        if window.screen == screen { return }
+        window.setFrame(stripRect(for: screen), display: false)
+        applyPadding(for: screen, state: state)
+    }
+
+    private static func stripRect(for screen: NSScreen) -> NSRect {
+        NSRect(
+            x: screen.frame.origin.x,
+            y: screen.frame.origin.y + screen.frame.height - stripHeight,
+            width: screen.frame.width,
+            height: stripHeight
+        )
+    }
+
+    @MainActor
+    private static func applyPadding(for screen: NSScreen, state: OverlayState) {
+        let notchHeight = max(0, screen.safeAreaInsets.top)
+        state.topPadding = notchHeight > 0 ? notchHeight + 2 : 28
     }
 }
 
 extension NSScreen {
-    /// Prefer the built-in display (where the notch lives); fall back to main.
-    static var builtinOrMain: NSScreen {
-        let screenNumberKey = NSDeviceDescriptionKey(rawValue: "NSScreenNumber")
-        for s in NSScreen.screens {
-            if let id = s.deviceDescription[screenNumberKey],
-               let rid = (id as? NSNumber)?.uint32Value,
-               CGDisplayIsBuiltin(rid) == 1
-            {
-                return s
-            }
+    /// The screen currently containing the mouse cursor. Falls back to `main`
+    /// and then to the first screen if the cursor is somehow outside every
+    /// screen frame (shouldn't happen but defensive).
+    static var cursorScreen: NSScreen {
+        let p = NSEvent.mouseLocation
+        if let hit = NSScreen.screens.first(where: { $0.frame.contains(p) }) {
+            return hit
         }
         return NSScreen.main ?? NSScreen.screens[0]
     }
