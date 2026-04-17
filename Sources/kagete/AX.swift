@@ -332,6 +332,92 @@ enum AXInspector {
         return (b.role, b.title)
     }
 
+    /// AX roles that genuinely accept keyboard input. Used to decide whether
+    /// `type`'s auto-focus pass needs to fire — if the app already has one
+    /// of these focused, the click did its job and we leave focus alone.
+    private static let textInputRoles: Set<String> = [
+        "AXTextField", "AXTextArea", "AXSearchField",
+        "AXComboBox", "AXTextInput",
+    ]
+
+    /// Best-effort: ensure a text input has keyboard focus before `type`.
+    /// Two-tier heuristic — many UIs don't install first responder on
+    /// synthesized clicks (custom NSViews) or on shortcut-opened search
+    /// bars (Electron, QQ音乐), so `type` would otherwise spray keys
+    /// into the void:
+    ///   1. If app focus is already on a known text input → no-op.
+    ///   2. Walk the focused window for visible+enabled text inputs.
+    ///      Prefer one whose frame contains the cursor (click-then-type
+    ///      — handles forms with multiple inputs). Else pick the topmost
+    ///      (shortcut-then-type — search/URL bars cluster at top).
+    ///   3. Fallback: AX hit-test at the cursor (catches custom-drawn
+    ///      inputs whose role doesn't surface in the window walk).
+    /// All writes use `AXUIElementSetAttributeValue(kAXFocusedAttribute)`.
+    /// Web inputs focus via DOM, not AX, so this won't help embedded
+    /// web content — but won't hurt either.
+    @discardableResult
+    static func ensureTextFocus(pid: pid_t) -> Bool {
+        if let cur = focusedSummary(pid: pid),
+           let role = cur.role, textInputRoles.contains(role)
+        {
+            return true
+        }
+        let cursor = CGEvent(source: nil)?.location ?? .zero
+        let candidates = textInputsInFocusedWindow(pid: pid)
+        if !candidates.isEmpty {
+            let target = pickInput(candidates: candidates, cursor: cursor)
+            if AXUIElementSetAttributeValue(
+                target, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+            {
+                return true
+            }
+        }
+        let appEl = AXUIElementCreateApplication(pid)
+        var hit: AXUIElement?
+        let err = AXUIElementCopyElementAtPosition(
+            appEl, Float(cursor.x), Float(cursor.y), &hit)
+        guard err == .success, let el = hit else { return false }
+        return AXUIElementSetAttributeValue(
+            el, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+    }
+
+    private static func focusedWindow(pid: pid_t) -> AXUIElement? {
+        let appEl = AXUIElementCreateApplication(pid)
+        var ref: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(
+            appEl, kAXFocusedWindowAttribute as CFString, &ref)
+        guard err == .success, let raw = ref else { return nil }
+        return (raw as! AXUIElement)
+    }
+
+    private static func textInputsInFocusedWindow(
+        pid: pid_t, maxDepth: Int = 32
+    ) -> [(el: AXUIElement, frame: CGRect)] {
+        guard let window = focusedWindow(pid: pid) else { return [] }
+        let rootBundle = bundle(for: window)
+        var hits: [(AXUIElement, CGRect)] = []
+        _ = traverse(
+            window, bundle: rootBundle, path: "",
+            depth: 0, maxDepth: maxDepth
+        ) { el, b, _ in
+            guard let role = b.role, textInputRoles.contains(role) else { return true }
+            if b.enabled == false { return true }
+            guard let f = b.frame, f.width > 0, f.height > 0 else { return true }
+            hits.append((el, CGRect(x: f.x, y: f.y, width: f.width, height: f.height)))
+            return true
+        }
+        return hits
+    }
+
+    private static func pickInput(
+        candidates: [(el: AXUIElement, frame: CGRect)], cursor: CGPoint
+    ) -> AXUIElement {
+        if let under = candidates.first(where: { $0.frame.contains(cursor) }) {
+            return under.el
+        }
+        return candidates.min(by: { $0.frame.minY < $1.frame.minY })!.el
+    }
+
     /// Compact overview of a window's AX tree — designed so agents can decide
     /// whether to drill in via `find` or ask for the full tree via
     /// `inspect --tree`. Avoids dumping tens of thousands of nodes by default.

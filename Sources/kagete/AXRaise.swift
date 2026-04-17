@@ -87,7 +87,13 @@ enum Activator {
             _ = try AXRaise.raise(pid: target.pid, windowFilter: target.windowFilter)
             target.app.activate()
         }
-        try await Task.sleep(nanoseconds: 150_000_000)
+        // 300 ms — long enough for Electron / Chromium-backed apps to
+        // finish their JS-side activation handlers (which is when DOM
+        // focus settles into search bars, panels, etc). 150 ms was
+        // empirically too tight: type's auto-focus pass would read AX
+        // before the app had finished processing the prior command's
+        // shortcut, so we'd find the wrong input.
+        try await Task.sleep(nanoseconds: 300_000_000)
     }
 
     private static func autoRaise(_ target: ResolvedTarget) -> Bool {

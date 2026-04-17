@@ -130,7 +130,7 @@ Every command writes a single JSON object to stdout:
   "command": "click",
   "target":  { "pid": 1234, "app": "Safari", "bundle": "com.apple.Safari", "window": "GitHub" },
   "result":  { "method": "ax-press", "button": "left", "count": 1, "point": {...}, "element": {...} },
-  "verify":  { "focusedRole": "AXTextField", "focusedTitle": "search", "cursor": {...} },
+  "verify":  { "cursor": {...} },
   "hint":    "optional machine-readable next-step"
 }
 ```
@@ -155,7 +155,7 @@ On failure the shape flips to `{ok:false, command, target?, error:{code, message
 Key fields to know:
 
 - **`result`** — command-specific success payload (see [references/commands.md](references/commands.md))
-- **`verify`** — post-action state snapshot. For `click`/`type`/`key`, `verify.focusedRole` + `focusedTitle` tell you whether focus landed on the element you expected, without a follow-up `inspect`/`screenshot`. `verify.cursor` shows the actual cursor position after input.
+- **`verify`** — post-action state snapshot. For `type`/`key`, `verify.focusedRole` + `focusedTitle` tell you which element received the input, without a follow-up `inspect`/`screenshot`. For `click`/`drag`, `verify.cursor` shows the actual cursor position after input — use it to confirm the click landed at the requested point. (Click verify intentionally omits `focusedRole`: app focus is unrelated to "what was clicked" — re-`find` or `screenshot` if you need to verify the click target itself.)
 - **`hint`** — machine-readable next-step when kagete can infer one (e.g. `"Hit --limit (50) — narrow with --enabled-only"`). Absent when none applies.
 
 Every action command accepts `--text` (or equivalent, documented per command) to emit a terse one-liner instead of the envelope — handy for humans running commands interactively. `kagete find --paths-only` stays as plain newline-separated axPath strings for shell piping.
@@ -165,7 +165,7 @@ Every action command accepts `--text` (or equivalent, documented per command) to
 1. **Try AX first, flip to Visual on evidence.** Start with `find`. If `result.count == 0` for text you can see on screen, the app is custom-drawn — switch to screenshot + coords without hesitation.
 2. **Prefer `find` over `inspect --tree`.** Most windows have 1000+ AX nodes. `inspect` (default) returns a compact summary — use it only for survey. `find --role AXButton --title-contains "Save"` is the targeted query.
 3. **`axPath` beats coordinates when both exist.** Paths are stable across redraws; coords break on first resize.
-4. **Read `verify` before re-screenshotting.** For `click`/`type`/`key`, the envelope already tells you the focused element post-action. Only screenshot to confirm when `verify` is insufficient (Visual path, or cross-window state).
+4. **Read `verify` before re-screenshotting.** For `type`/`key` it gives you the focused element post-action; for `click`/`drag` it gives the actual cursor coord. Only screenshot to confirm when `verify` is insufficient — e.g. you need to know what UI the click *hit* (not just where the cursor went), or anything visual-only.
 5. **Activation is automatic.** Input commands call `activate()` on the target app and wait 150 ms before firing events. Pass `--no-activate` to opt out.
 6. **Sleep between semantic steps, not inside them.** kagete paces low-level events (mouse-down → mouse-up, inter-keystroke) internally — don't wrap those. But between distinct high-level steps (click → menu renders, type → network request returns, `key cmd+s` → save dialog appears), **add a short `sleep`** so the app has time to transition before the next kagete call reads its post-action state. Typical values: `sleep 0.2` after menu/context opens, `sleep 0.3–0.5` after a modal or view transition, poll loops with `sleep 0.25` for network-bound waits. Without these, `find`/`screenshot` may run before the UI has caught up and return stale state.
 7. **Chain sequential steps in one bash/exec call.** A pipeline of `kagete click && sleep 0.2 && kagete key && …` should live in **one** shell invocation, not split across multiple tool calls. Each tool-call boundary costs latency and context; chaining with `&&` keeps the sequence atomic (a failing step aborts the rest) and couples each action with its post-step sleep in one place. Reserve separate tool calls for branching on the **result** of a previous pipeline — not for stepping through a fixed sequence.

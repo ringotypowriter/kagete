@@ -42,6 +42,17 @@ enum Input {
     static func click(at point: CGPoint, button: MouseButton = .left, count: Int = 1) throws {
         try ensureAccessibility()
         let source = try makeEventSource()
+        // Detach cursor from the real mouse and warp to the exact target
+        // before any synthesis. Without this, mouseMoved posted at
+        // .cghidEventTap goes through pointer acceleration — a real mouse
+        // delta concurrent with our synthesis can shift the landing site
+        // by hundreds of points. `CGWarpMouseCursorPosition` bypasses
+        // acceleration entirely; the reassociate in `defer` hands the
+        // cursor back to the user immediately after.
+        CGAssociateMouseAndMouseCursorPosition(0)
+        defer { CGAssociateMouseAndMouseCursorPosition(1) }
+        CGWarpMouseCursorPosition(point)
+
         moveCursor(to: point, source: source)
         usleep(interEventDelayMicros)
 
@@ -130,6 +141,12 @@ enum Input {
     ) throws {
         try ensureAccessibility()
         let source = try makeEventSource()
+        // See `click` — warp + disassociate to neutralize pointer
+        // acceleration for the duration of the synthesized drag.
+        CGAssociateMouseAndMouseCursorPosition(0)
+        defer { CGAssociateMouseAndMouseCursorPosition(1) }
+        CGWarpMouseCursorPosition(start)
+
         moveCursor(to: start, source: source)
         usleep(interEventDelayMicros)
 

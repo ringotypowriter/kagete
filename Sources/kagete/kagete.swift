@@ -309,7 +309,9 @@ struct Screenshot: AsyncParsableCommand {
     @Option(name: .long, help: "Grid spacing in screen points (default 200). Smaller = denser.")
     var gridPitch: Double = 200
 
-    @Option(name: .long, help: "Output pixel scale relative to screen points (default 0.5 for agent consumption; 1 for native; 2 for retina).")
+    @Option(name: .long, help: ArgumentHelp(
+        "Output pixel scale relative to screen points (default 0.5 for agent consumption; 1 for native; 2 for retina).",
+        visibility: .hidden))
     var scale: Double = 0.5
 
     @Option(name: .long, help: "Crop to a window-relative region: \"x,y,w,h\" in screen points (e.g. \"400,200,800,600\"). Labels still show absolute screen coords.")
@@ -320,7 +322,6 @@ struct Screenshot: AsyncParsableCommand {
 
     struct ScreenshotResult: Codable {
         let path: String
-        let scale: Double
         let grid: Bool
         let cropped: Bool
     }
@@ -372,7 +373,7 @@ struct Screenshot: AsyncParsableCommand {
             command: "screenshot",
             target: TargetJSON(resolved: resolved),
             result: ScreenshotResult(
-                path: url.path, scale: scale, grid: !clean, cropped: cropRect != nil))
+                path: url.path, grid: !clean, cropped: cropRect != nil))
     }
 }
 
@@ -517,13 +518,11 @@ struct Click: AsyncParsableCommand {
                     actions: elementActions)
             })
 
-        let verify = buildVerify(pid: resolvedTarget?.pid)
-        let hint = buildHint(method: method, verify: verify, hadAxPress: canAxPress)
+        let verify = buildVerify()
+        let hint = buildHint(method: method)
 
         if text {
-            let title = verify?.focusedTitle.map { " \"\($0)\"" } ?? ""
-            let role = verify?.focusedRole ?? "-"
-            print("click: \(method) @ (\(Int(point.x)),\(Int(point.y))) → focus=\(role)\(title)")
+            print("click: \(method) @ (\(Int(point.x)),\(Int(point.y)))")
             return
         }
 
@@ -533,28 +532,24 @@ struct Click: AsyncParsableCommand {
             result: result, verify: verify, hint: hint)
     }
 
-    private func buildVerify(pid: pid_t?) -> VerifyJSON? {
+    // Click verify intentionally reports cursor only. App-level keyboard
+    // focus (AXFocusedUIElement) is unrelated to "what was clicked":
+    // buttons usually don't take focus, so the field surfaces whatever
+    // sidebar/list happened to hold focus before the click and misleads
+    // the agent into reasoning about an unrelated element. Use `find` /
+    // `inspect` / `screenshot` if you need to verify the click target
+    // itself.
+    private func buildVerify() -> VerifyJSON? {
         let cursor = CGEvent(source: nil).map {
             PointJSON(x: Double($0.location.x), y: Double($0.location.y))
         }
-        guard let pid else {
-            return VerifyJSON(focusedAxPath: nil, focusedRole: nil,
-                              focusedTitle: nil, cursor: cursor)
-        }
-        let f = AXInspector.focusedSummary(pid: pid)
-        return VerifyJSON(
-            focusedAxPath: nil,
-            focusedRole: f?.role,
-            focusedTitle: f?.title,
-            cursor: cursor)
+        return VerifyJSON(focusedAxPath: nil, focusedRole: nil,
+                          focusedTitle: nil, cursor: cursor)
     }
 
-    private func buildHint(method: String, verify: VerifyJSON?, hadAxPress: Bool) -> String? {
+    private func buildHint(method: String) -> String? {
         if method == "cg-event-fallback" {
             return "Element advertised AXPress but it failed — UI may have intercepted the event."
-        }
-        if hadAxPress, method == "ax-press", verify?.focusedRole == nil {
-            return "AXPress accepted but no focus observed — if you expected an input, a follow-up click or `type` may still be needed."
         }
         return nil
     }
@@ -597,6 +592,23 @@ struct TypeText: AsyncParsableCommand {
             resolved = try TargetResolver.resolve(target)
             if activate, let r = resolved {
                 try await Activator.activate(r)
+            }
+        }
+        // Auto-focus pass: a synthesized click moves the cursor visually
+        // but doesn't always install first responder — common on
+        // Electron, custom NSViews, and any UI whose mouseDown handler
+        // doesn't call makeFirstResponder. If the app's currently
+        // focused element isn't a known text input, ask AX for the
+        // element under the cursor and try to focus it. Best-effort:
+        // a no-op when AX can't help (web inputs, locked-down apps).
+        if let r = resolved {
+            if AXInspector.ensureTextFocus(pid: r.pid) {
+                // Let the app's focus-changed handler run. Chromium /
+                // Electron route focus through the DOM event loop and
+                // need a few turns before keystrokes land in the new
+                // input. Without this, the first chars often go to
+                // /dev/null.
+                usleep(120_000)
             }
         }
         if !noOverlay {

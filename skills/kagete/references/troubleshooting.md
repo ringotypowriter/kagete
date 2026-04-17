@@ -89,7 +89,7 @@ kagete screenshot --app "QQ音乐" -o /tmp/view.png
 kagete click --x 496 --y 375 --count 2
 ```
 
-`screenshot` captures at 0.5× by default (~1 MB PNG for a typical window). Pass `--scale 1` for native resolution, `--clean` to drop the grid overlay, `--grid-pitch 100` for denser labeling when targeting small UI.
+`screenshot` captures at a sensible default for agent consumption (~1 MB PNG for a typical window). Pass `--clean` to drop the grid overlay, `--grid-pitch 100` for denser labeling when targeting small UI.
 
 > Use **negative-coord syntax** — arg parser needs `--x=-1200` with the `=`, not `--x -1200`.
 

@@ -107,7 +107,7 @@ Capture a PNG of a window via ScreenCaptureKit with an absolute-coordinate grid 
 
 ```bash
 kagete screenshot --app TextEdit -o /tmp/shot.png
-kagete screenshot --bundle com.apple.Safari --window "GitHub" -o gh.png --scale 1
+kagete screenshot --bundle com.apple.Safari --window "GitHub" -o gh.png
 kagete screenshot --app Foo -o /tmp/clean.png --clean
 kagete screenshot --app Foo -o /tmp/s.png --text          # prints only the path
 ```
@@ -117,12 +117,11 @@ Flags:
 - `-o, --output PATH` (required) — destination PNG path.
 - `--clean` — skip the grid overlay.
 - `--grid-pitch N` (default `200`) — grid spacing in screen points.
-- `--scale N` (default `0.5`) — output pixel scale relative to screen points; `1` = native, `2` = retina.
 - `--crop "x,y,w,h"` — window-relative region in screen points; labels still show absolute coords.
 - `--text` — print only the output path (shell-friendly) instead of the envelope.
 - Standard target flags.
 
-`result` shape: `{path, scale, grid, cropped}`. Errors: `SCK_TIMEOUT` (retryable) when ScreenCaptureKit hangs — wrapper times out at 15 s instead of wedging forever.
+`result` shape: `{path, grid, cropped}`. Errors: `SCK_TIMEOUT` (retryable) when ScreenCaptureKit hangs — wrapper times out at 15 s instead of wedging forever.
 
 ---
 
@@ -150,9 +149,9 @@ Flags:
 
 `result` shape: `{method, button, count, point, element?}` where `method` is `ax-press`, `cg-event`, or `cg-event-fallback`. `element` (AX clicks only): `{axPath, role, title, actions}`.
 
-`verify` shape: `{focusedAxPath?, focusedRole, focusedTitle, cursor}` — post-click focused element + cursor landing. Branch on this to confirm the click did what you expected.
+`verify` shape: `{cursor}` — actual cursor position after the click. Use it to confirm the click landed at the requested point. Click verify intentionally does **not** report a focused role: app-level keyboard focus (`AXFocusedUIElement`) is unrelated to "what was clicked" — buttons usually don't take focus, so reading focus after a click would surface the wrong thing. To verify the click target, follow up with `find`/`screenshot`/`inspect`.
 
-`hint` fires on `cg-event-fallback` (AXPress accepted but UI didn't respond) and on AXPress with no observed focus change.
+`hint` fires on `cg-event-fallback` — AXPress was advertised but didn't take effect, so kagete fell back to a CGEvent click.
 
 **Dispatch strategy.** For a plain left single-click on a resolved `--ax-path`, kagete prefers `AXUIElementPerformAction(AXPress)` when the element's `actions` list contains it. This routes through the accessibility API and works on occluded or offscreen elements. Multi-click, right-click, and coord-only clicks always use CGEvent.
 

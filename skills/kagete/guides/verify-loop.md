@@ -21,11 +21,17 @@ kagete find --app TextEdit --role AXWindow --title-contains "Edited" | jq '.resu
 # 0 — verified
 ```
 
-Many input commands carry the post-action state on the response envelope itself (`verify.focusedRole`, `verify.cursor`), so you often don't need a follow-up `find` at all:
+Many input commands carry the post-action state on the response envelope itself (`verify.focusedRole` for `type`/`key`, `verify.cursor` for `click`/`drag`), so you often don't need a follow-up `find` at all:
 
 ```bash
-kagete click --app TextEdit --ax-path '…' | jq -e '.verify.focusedRole == "AXTextField"'
+# After typing, confirm the focused element is the field you meant
+kagete type --app TextEdit "hello" | jq -e '.verify.focusedRole == "AXTextField"'
+
+# After clicking, confirm the cursor landed where you asked
+kagete click --app TextEdit --x 800 --y 400 | jq -e '.verify.cursor.x == 800 and .verify.cursor.y == 400'
 ```
+
+> Note: `click`'s verify reports `cursor` only — it does **not** report a focused role. App-level keyboard focus (`AXFocusedUIElement`) is unrelated to "what was clicked": buttons usually don't take focus, so reading focus after a click would surface whatever sidebar/list happened to hold focus before. To check what a click actually hit, re-`find` or screenshot.
 
 ### 2. Visual — screenshot and read it
 
@@ -105,20 +111,18 @@ fi
 
 ---
 
-## Recipe — Confirm Focus Landed
+## Recipe — Confirm Focus Landed Before Typing
 
-Before typing, check that the click actually focused the field you meant:
+`type` and `key` envelopes report `verify.focusedRole` — their action goes to the focused element, so the field is meaningful. (`click`'s verify reports `cursor` only — see the note above.) Pattern: type a single character (or your real payload) and branch on the focused role:
 
 ```bash
-# The click envelope already carries the focused element — no follow-up needed
-role=$(kagete click --app Mail --ax-path '…/AXTextField[title="To:"]' \
-  | jq -r '.verify.focusedRole')
+kagete click --app Mail --ax-path '…/AXTextField[title="To:"]'
+
+role=$(kagete type --app Mail "leader@example.com" | jq -r '.verify.focusedRole')
 if [ "$role" != "AXTextField" ]; then
-  echo "focus didn't land — aborting before typing into the wrong place"
+  echo "focus didn't land where expected — text may have gone to the wrong field"
   exit 1
 fi
-
-kagete type --app Mail "leader@example.com"
 ```
 
 ---
@@ -148,7 +152,7 @@ done
 
 | Situation | Use |
 |---|---|
-| Did my click land on the right element? | Read `.verify.focusedRole` / `.verify.focusedTitle` on the click envelope itself |
+| Did my click land on the right point? | Read `.verify.cursor` on the click envelope. To verify the click *target* (not just the point), re-`find`/`screenshot`/`inspect` after. |
 | Did the value in this field update? | `find` → `.result.hits[0].value` |
 | Did a dialog appear? | `find --role AXSheet` / `AXDialog` / `--title "…"` |
 | Did the page's visual state change? | `screenshot`, then Read |
