@@ -13,6 +13,12 @@ let package = Package(
             name: "kagete",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("ScreenCaptureKit"),
             ]
         ),
         .testTarget(
