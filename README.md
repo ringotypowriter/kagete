@@ -128,14 +128,14 @@ kagete identifies elements with `axPath` strings, slash-separated from window ro
 /AXWindow/AXOutline/AXRow[0]/AXCell
 ```
 
-Paths survive resizes, redraws, and theme changes. Re-run `find` if the UI's structure changes (modals open, rows added, etc.). See [skills/references/ax-paths.md](skills/references/ax-paths.md) for the full grammar.
+Paths survive resizes, redraws, and theme changes. Re-run `find` if the UI's structure changes (modals open, rows added, etc.). See [skills/kagete/references/ax-paths.md](skills/kagete/references/ax-paths.md) for the full grammar.
 
 ## Agent skill
 
-A Claude Code skill at [`skills/`](skills/) teaches LLM agents how to use kagete:
+A Claude Code skill at [`skills/kagete/`](skills/kagete/) teaches LLM agents how to use kagete:
 
 ```sh
-ln -s "$PWD/skills" ~/.claude/skills/kagete
+ln -s "$PWD/skills/kagete" ~/.claude/skills/kagete
 ```
 
 Includes a compact hub (`SKILL.md`), full command reference (`references/commands.md`), path grammar (`references/ax-paths.md`), canonical `find → act` pipeline (`guides/find-then-act.md`), and verification patterns (`guides/verify-loop.md`).
