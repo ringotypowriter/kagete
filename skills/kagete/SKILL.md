@@ -57,7 +57,7 @@ Safari, Finder, TextEdit, Xcode, System Settings, Notes, Mail, Slack desktop, mo
 
 ### 2. Visual path — for custom-drawn / AX-hostile apps
 
-Tencent apps (QQ Music, WeChat, QQ), Electron apps with optimized-away trees, games, canvases, embedded webviews that hide text from AX. **Diagnostic: `find --value-contains <visible text>` returns `[]` for text clearly on screen → flip to Visual.**
+Custom-drawn apps, Electron apps with optimized-away trees, games, canvas-based UIs, embedded webviews that hide text from AX. **Diagnostic: `find --value-contains <visible text>` returns `[]` for text clearly on screen → flip to Visual.**
 
 ```
 ┌──────────────┐    ┌──────────┐    ┌──────────────┐    ┌────────────────┐

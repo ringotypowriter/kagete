@@ -75,7 +75,7 @@ Fixes, in order:
 3. Try alternate attributes: `--value-contains` / `--description-contains`
 4. Fall back to `inspect --max-depth 8` to see the actual tree and pick a sibling-indexed path
 
-**B. Custom-drawn UI — go visual.** Some apps render entire surfaces with custom drawing and never publish the visible text through AX. Confirmed offenders: Tencent apps (QQ Music search results, WeChat message list), Electron apps with aggressive optimization, some game launchers. Diagnostic: `find --value-contains <visible text> --limit 5` returns `[]` for text you can clearly see on screen.
+**B. Custom-drawn UI — go visual.** Some apps render entire surfaces with custom drawing and never publish the visible text through AX. Common patterns: custom-rendered list views, Electron apps with aggressive tree-shaking, game launchers, canvas-based UIs. Diagnostic: `find --value-contains <visible text> --limit 5` returns `[]` for text you can clearly see on screen.
 
 When this happens, switch to the visual path:
 

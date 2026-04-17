@@ -45,7 +45,7 @@ Flags:
 
 - `--max-depth N` (default `12`) — cap recursion depth. Useful for huge windows.
 - `--full` — emit the raw tree without pruning. Default is compact: unlabeled `AXUnknown` nodes with no labeled descendants are dropped. The surviving nodes keep their original `axPath`, so `find`/`click` still resolve against the live tree.
-- `--with-actions` — include each node's advertised AX actions (e.g. `AXPress`). Adds one IPC call per node — avoid on large web-embedded UIs (Tencent apps, Electron).
+- `--with-actions` — include each node's advertised AX actions (e.g. `AXPress`). Adds one IPC call per node — avoid on large web-embedded UIs (Electron apps, heavy AXWebArea trees).
 - Standard target flags: `--app` / `--bundle` / `--pid` / `--window`.
 
 Each node has: `role`, `subrole`, `title`, `value`, `description`, `identifier`, `help`, `enabled`, `focused`, `actions`, `frame`, `axPath`, `children`.
