@@ -27,9 +27,15 @@ enum MouseButton: String, CaseIterable {
 }
 
 enum Input {
+    /// Minimum gap (µs) between successive posted events. HID drops events
+    /// that arrive faster than the event tap can drain them — especially
+    /// keyboard events with Unicode payloads. 3ms is empirically enough.
+    static let interEventDelayMicros: UInt32 = 3_000
+
     static func click(at point: CGPoint, button: MouseButton = .left, count: Int = 1) throws {
         try ensureAccessibility()
         moveCursor(to: point)
+        usleep(interEventDelayMicros)
         for i in 1...max(1, count) {
             if let down = CGEvent(
                 mouseEventSource: nil,
@@ -40,6 +46,7 @@ enum Input {
                 down.setIntegerValueField(.mouseEventClickState, value: Int64(i))
                 down.post(tap: .cghidEventTap)
             }
+            usleep(interEventDelayMicros)
             if let up = CGEvent(
                 mouseEventSource: nil,
                 mouseType: button.upType,
@@ -49,6 +56,7 @@ enum Input {
                 up.setIntegerValueField(.mouseEventClickState, value: Int64(i))
                 up.post(tap: .cghidEventTap)
             }
+            usleep(interEventDelayMicros)
         }
     }
 
@@ -83,7 +91,9 @@ enum Input {
                 }
             }
             down.post(tap: .cghidEventTap)
+            usleep(interEventDelayMicros)
             up.post(tap: .cghidEventTap)
+            usleep(interEventDelayMicros)
         }
     }
 
@@ -98,7 +108,9 @@ enum Input {
         down.flags = combo.flags
         up.flags = combo.flags
         down.post(tap: .cghidEventTap)
+        usleep(interEventDelayMicros)
         up.post(tap: .cghidEventTap)
+        usleep(interEventDelayMicros)
     }
 
     private static func moveCursor(to point: CGPoint) {

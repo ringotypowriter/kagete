@@ -162,7 +162,10 @@ struct Click: AsyncParsableCommand {
         let point: CGPoint
         if let ax = axPath {
             let resolved = try TargetResolver.resolve(target)
-            if activate { resolved.app.activate() }
+            if activate {
+                resolved.app.activate()
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
             let el = try AXInspector.locate(
                 pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: ax)
             guard let center = AXInspector.screenCenter(of: el) else {
@@ -195,7 +198,10 @@ struct TypeText: AsyncParsableCommand {
     func run() async throws {
         if target.app != nil || target.bundle != nil || target.pid != nil {
             let resolved = try TargetResolver.resolve(target)
-            if activate { resolved.app.activate() }
+            if activate {
+                resolved.app.activate()
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
         }
         try Input.type(text)
     }
@@ -217,7 +223,10 @@ struct Key: AsyncParsableCommand {
     func run() async throws {
         if target.app != nil || target.bundle != nil || target.pid != nil {
             let resolved = try TargetResolver.resolve(target)
-            if activate { resolved.app.activate() }
+            if activate {
+                resolved.app.activate()
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
         }
         let parsed = try KeyCodes.parse(combo)
         try Input.key(parsed)
@@ -246,7 +255,10 @@ struct Scroll: AsyncParsableCommand {
     func run() async throws {
         if target.app != nil || target.bundle != nil || target.pid != nil {
             let resolved = try TargetResolver.resolve(target)
-            if activate { resolved.app.activate() }
+            if activate {
+                resolved.app.activate()
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
         }
         try Input.scroll(dx: dx, dy: dy, lines: !pixels)
     }
