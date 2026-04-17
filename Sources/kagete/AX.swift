@@ -34,12 +34,13 @@ enum AXInspector {
         compact: Bool = true, withActions: Bool = false
     ) throws -> AXNode {
         let chosen = try selectWindow(pid: pid, windowFilter: windowFilter)
+        let rootBundle = bundle(for: chosen)
         let rootSegment = pathSegment(
-            role: copyAttr(chosen, kAXRoleAttribute) as? String,
-            title: copyAttr(chosen, kAXTitleAttribute) as? String,
-            identifier: copyAttr(chosen, kAXIdentifierAttribute) as? String)
+            role: rootBundle.role, title: rootBundle.title,
+            identifier: rootBundle.identifier)
         let raw = walk(
-            chosen, path: "/\(rootSegment)", depth: 0,
+            chosen, bundle: rootBundle,
+            path: "/\(rootSegment)", depth: 0,
             maxDepth: maxDepth, withActions: withActions)
         return compact ? prune(raw) ?? raw : raw
     }
@@ -62,28 +63,18 @@ enum AXInspector {
     }
 
     private static func walk(
-        _ el: AXUIElement, path: String, depth: Int, maxDepth: Int,
+        _ el: AXUIElement, bundle b: AXBundle,
+        path: String, depth: Int, maxDepth: Int,
         withActions: Bool
     ) -> AXNode {
-        let role = copyAttr(el, kAXRoleAttribute) as? String
-        let subrole = copyAttr(el, kAXSubroleAttribute) as? String
-        let title = copyAttr(el, kAXTitleAttribute) as? String
-        let value = stringify(copyAttr(el, kAXValueAttribute))
-        let description = copyAttr(el, kAXDescriptionAttribute) as? String
-        let identifier = copyAttr(el, kAXIdentifierAttribute) as? String
-        let help = copyAttr(el, kAXHelpAttribute) as? String
-        let enabled = copyAttr(el, kAXEnabledAttribute) as? Bool
-        let focused = copyAttr(el, kAXFocusedAttribute) as? Bool
         let actions = withActions ? actionNames(el) : []
-        let frame = frameOf(el)
 
         var children: [AXNode] = []
-        if depth < maxDepth, let kids = copyAttr(el, kAXChildrenAttribute) as? [AXUIElement], !kids.isEmpty {
-            let rawSegments: [String] = kids.map { child in
-                pathSegment(
-                    role: copyAttr(child, kAXRoleAttribute) as? String,
-                    title: copyAttr(child, kAXTitleAttribute) as? String,
-                    identifier: copyAttr(child, kAXIdentifierAttribute) as? String)
+        if depth < maxDepth, !b.children.isEmpty {
+            let kids = b.children
+            let childBundles = kids.map { AXInspector.bundle(for: $0) }
+            let rawSegments: [String] = childBundles.map { cb in
+                pathSegment(role: cb.role, title: cb.title, identifier: cb.identifier)
             }
             var counts: [String: Int] = [:]
             for seg in rawSegments { counts[seg, default: 0] += 1 }
@@ -100,17 +91,18 @@ enum AXInspector {
                     seg = base
                 }
                 children.append(walk(
-                    child, path: "\(path)/\(seg)", depth: depth + 1,
+                    child, bundle: childBundles[i],
+                    path: "\(path)/\(seg)", depth: depth + 1,
                     maxDepth: maxDepth, withActions: withActions))
             }
         }
 
         return AXNode(
-            role: role, subrole: subrole, title: title, value: value,
-            description: description, identifier: identifier, help: help,
-            enabled: enabled, focused: focused,
+            role: b.role, subrole: b.subrole, title: b.title, value: b.valueString,
+            description: b.description, identifier: b.identifier, help: b.help,
+            enabled: b.enabled, focused: b.focused,
             actions: actions.isEmpty ? nil : actions,
-            frame: frame,
+            frame: b.frame,
             axPath: path, children: children)
     }
 
@@ -127,6 +119,67 @@ enum AXInspector {
     private static func escape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// Batch fetch of the 12 attributes kagete cares about for tree walks.
+    /// One IPC per element instead of ~14 individual `copyAttr` calls.
+    /// Missing attributes come back as `AXValue` error wrappers and are
+    /// surfaced as `nil` here.
+    private nonisolated(unsafe) static let bundleKeys: [CFString] = [
+        kAXRoleAttribute as CFString,
+        kAXSubroleAttribute as CFString,
+        kAXTitleAttribute as CFString,
+        kAXValueAttribute as CFString,
+        kAXDescriptionAttribute as CFString,
+        kAXIdentifierAttribute as CFString,
+        kAXHelpAttribute as CFString,
+        kAXEnabledAttribute as CFString,
+        kAXFocusedAttribute as CFString,
+        kAXPositionAttribute as CFString,
+        kAXSizeAttribute as CFString,
+        kAXChildrenAttribute as CFString,
+    ]
+
+    static func bundle(for el: AXUIElement) -> AXBundle {
+        var out: CFArray?
+        let err = AXUIElementCopyMultipleAttributeValues(
+            el, bundleKeys as CFArray,
+            AXCopyMultipleAttributeOptions(rawValue: 0), &out)
+        let raw: [Any] = (err == .success ? (out as? [Any]) : nil) ?? []
+
+        func at(_ i: Int) -> Any? {
+            guard i < raw.count else { return nil }
+            let v = raw[i]
+            // Apple wraps "attribute not applicable" as AXValue of type axError.
+            if CFGetTypeID(v as CFTypeRef) == AXValueGetTypeID() {
+                if AXValueGetType(v as! AXValue) == .axError { return nil }
+            }
+            return v
+        }
+
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        var frame: BoundsJSON? = nil
+        if let p = at(9), CFGetTypeID(p as CFTypeRef) == AXValueGetTypeID(),
+           let s = at(10), CFGetTypeID(s as CFTypeRef) == AXValueGetTypeID(),
+           AXValueGetValue(p as! AXValue, .cgPoint, &position),
+           AXValueGetValue(s as! AXValue, .cgSize, &size)
+        {
+            frame = BoundsJSON(CGRect(origin: position, size: size))
+        }
+
+        return AXBundle(
+            role: at(0) as? String,
+            subrole: at(1) as? String,
+            title: at(2) as? String,
+            valueString: stringify(at(3)),
+            description: at(4) as? String,
+            identifier: at(5) as? String,
+            help: at(6) as? String,
+            enabled: (at(7) as? NSNumber)?.boolValue,
+            focused: (at(8) as? NSNumber)?.boolValue,
+            frame: frame,
+            children: (at(11) as? [AXUIElement]) ?? [])
     }
 
     /// Names of the AX actions an element advertises (e.g. `AXPress`,
@@ -179,6 +232,10 @@ enum AXInspector {
                 "Accessibility permission not granted. Run `kagete doctor --prompt` or grant it in System Settings → Privacy & Security → Accessibility.")
         }
         let appEl = AXUIElementCreateApplication(pid)
+        // Cap AX IPC at 1.5s per call. Default is ~6s, which lets one stuck
+        // web frame stall an entire tree walk. Set on the app element and
+        // it cascades to all child elements from this app.
+        AXUIElementSetMessagingTimeout(appEl, 1.5)
         let windows = (copyAttr(appEl, kAXWindowsAttribute) as? [AXUIElement]) ?? []
         guard !windows.isEmpty else {
             throw KageteError.notFound("No AX windows for pid \(pid).")
@@ -205,30 +262,29 @@ enum AXInspector {
 
     static func locate(pid: pid_t, windowFilter: String?, axPath: String) throws -> AXUIElement {
         let root = try selectWindow(pid: pid, windowFilter: windowFilter)
+        let rootBundle = bundle(for: root)
         let rootSeg = pathSegment(
-            role: copyAttr(root, kAXRoleAttribute) as? String,
-            title: copyAttr(root, kAXTitleAttribute) as? String,
-            identifier: copyAttr(root, kAXIdentifierAttribute) as? String)
+            role: rootBundle.role, title: rootBundle.title,
+            identifier: rootBundle.identifier)
         let rootPath = "/\(rootSeg)"
-        if let hit = search(root, path: rootPath, target: axPath) {
+        if let hit = search(root, bundle: rootBundle, path: rootPath, target: axPath) {
             return hit
         }
         throw KageteError.notFound("No AX element matches path \(axPath).")
     }
 
-    private static func search(_ el: AXUIElement, path: String, target: String) -> AXUIElement? {
+    private static func search(
+        _ el: AXUIElement, bundle b: AXBundle, path: String, target: String
+    ) -> AXUIElement? {
         if path == target { return el }
         // Prune: if target doesn't start with current path, subtree cannot contain it.
         if !target.hasPrefix(path + "/") { return nil }
 
-        guard let kids = copyAttr(el, kAXChildrenAttribute) as? [AXUIElement], !kids.isEmpty else {
-            return nil
-        }
-        let rawSegments: [String] = kids.map { child in
-            pathSegment(
-                role: copyAttr(child, kAXRoleAttribute) as? String,
-                title: copyAttr(child, kAXTitleAttribute) as? String,
-                identifier: copyAttr(child, kAXIdentifierAttribute) as? String)
+        let kids = b.children
+        guard !kids.isEmpty else { return nil }
+        let childBundles = kids.map { AXInspector.bundle(for: $0) }
+        let rawSegments: [String] = childBundles.map { cb in
+            pathSegment(role: cb.role, title: cb.title, identifier: cb.identifier)
         }
         var counts: [String: Int] = [:]
         for seg in rawSegments { counts[seg, default: 0] += 1 }
@@ -243,7 +299,10 @@ enum AXInspector {
             } else {
                 seg = base
             }
-            if let hit = search(child, path: "\(path)/\(seg)", target: target) {
+            if let hit = search(
+                child, bundle: childBundles[i],
+                path: "\(path)/\(seg)", target: target)
+            {
                 return hit
             }
         }
@@ -267,15 +326,15 @@ enum AXInspector {
         maxDepth: Int
     ) throws -> [AXHit] {
         let root = try selectWindow(pid: pid, windowFilter: windowFilter)
+        let rootBundle = bundle(for: root)
         let rootSeg = pathSegment(
-            role: copyAttr(root, kAXRoleAttribute) as? String,
-            title: copyAttr(root, kAXTitleAttribute) as? String,
-            identifier: copyAttr(root, kAXIdentifierAttribute) as? String)
+            role: rootBundle.role, title: rootBundle.title,
+            identifier: rootBundle.identifier)
 
         var hits: [AXHit] = []
-        _ = traverse(root, path: "/\(rootSeg)", depth: 0, maxDepth: maxDepth) { el, path in
-            if matches(el, criteria: criteria) {
-                hits.append(hit(from: el, path: path))
+        _ = traverse(root, bundle: rootBundle, path: "/\(rootSeg)", depth: 0, maxDepth: maxDepth) { el, b, path in
+            if matches(bundle: b, criteria: criteria) {
+                hits.append(hit(from: el, bundle: b, path: path))
                 if hits.count >= limit { return false }
             }
             return true
@@ -283,26 +342,25 @@ enum AXInspector {
         return hits
     }
 
-    /// Pre-order DFS with stable sibling-indexed paths. Visitor returns
-    /// `false` to stop traversal entirely.
+    /// Pre-order DFS with stable sibling-indexed paths. Visitor receives the
+    /// pre-fetched bundle so filtering/materializing hits costs zero IPC.
+    /// Returning `false` stops traversal entirely.
     @discardableResult
     private static func traverse(
         _ el: AXUIElement,
+        bundle b: AXBundle,
         path: String,
         depth: Int,
         maxDepth: Int,
-        visit: (AXUIElement, String) -> Bool
+        visit: (AXUIElement, AXBundle, String) -> Bool
     ) -> Bool {
-        if !visit(el, path) { return false }
+        if !visit(el, b, path) { return false }
         if depth >= maxDepth { return true }
-        guard let kids = copyAttr(el, kAXChildrenAttribute) as? [AXUIElement], !kids.isEmpty else {
-            return true
-        }
-        let rawSegments: [String] = kids.map { child in
-            pathSegment(
-                role: copyAttr(child, kAXRoleAttribute) as? String,
-                title: copyAttr(child, kAXTitleAttribute) as? String,
-                identifier: copyAttr(child, kAXIdentifierAttribute) as? String)
+        let kids = b.children
+        guard !kids.isEmpty else { return true }
+        let childBundles = kids.map { AXInspector.bundle(for: $0) }
+        let rawSegments: [String] = childBundles.map { cb in
+            pathSegment(role: cb.role, title: cb.title, identifier: cb.identifier)
         }
         var counts: [String: Int] = [:]
         for seg in rawSegments { counts[seg, default: 0] += 1 }
@@ -317,50 +375,45 @@ enum AXInspector {
             } else {
                 seg = base
             }
-            if !traverse(child, path: "\(path)/\(seg)", depth: depth + 1, maxDepth: maxDepth, visit: visit) {
+            if !traverse(
+                child, bundle: childBundles[i],
+                path: "\(path)/\(seg)", depth: depth + 1,
+                maxDepth: maxDepth, visit: visit)
+            {
                 return false
             }
         }
         return true
     }
 
-    private static func matches(_ el: AXUIElement, criteria: FindCriteria) -> Bool {
-        let role = copyAttr(el, kAXRoleAttribute) as? String
-        let subrole = copyAttr(el, kAXSubroleAttribute) as? String
-        let title = (copyAttr(el, kAXTitleAttribute) as? String) ?? ""
-        let identifier = copyAttr(el, kAXIdentifierAttribute) as? String
-        let description = (copyAttr(el, kAXDescriptionAttribute) as? String) ?? ""
-        let value = stringify(copyAttr(el, kAXValueAttribute)) ?? ""
-        let enabled = copyAttr(el, kAXEnabledAttribute) as? Bool
-
-        if let want = criteria.role, role != want { return false }
-        if let want = criteria.subrole, subrole != want { return false }
+    private static func matches(bundle b: AXBundle, criteria: FindCriteria) -> Bool {
+        if let want = criteria.role, b.role != want { return false }
+        if let want = criteria.subrole, b.subrole != want { return false }
+        let title = b.title ?? ""
+        let description = b.description ?? ""
+        let value = b.valueString ?? ""
         if let want = criteria.title, title != want { return false }
         if let want = criteria.titleContains,
            !title.localizedCaseInsensitiveContains(want) { return false }
-        if let want = criteria.identifier, identifier != want { return false }
+        if let want = criteria.identifier, b.identifier != want { return false }
         if let want = criteria.descriptionContains,
            !description.localizedCaseInsensitiveContains(want) { return false }
         if let want = criteria.valueContains,
            !value.localizedCaseInsensitiveContains(want) { return false }
-        if criteria.enabledOnly, enabled != true { return false }
-        if criteria.disabledOnly, enabled == true { return false }
+        if criteria.enabledOnly, b.enabled != true { return false }
+        if criteria.disabledOnly, b.enabled == true { return false }
         return true
     }
 
-    private static func hit(from el: AXUIElement, path: String) -> AXHit {
+    private static func hit(from el: AXUIElement, bundle b: AXBundle, path: String) -> AXHit {
         let acts = actionNames(el)
         return AXHit(
-            role: copyAttr(el, kAXRoleAttribute) as? String,
-            subrole: copyAttr(el, kAXSubroleAttribute) as? String,
-            title: copyAttr(el, kAXTitleAttribute) as? String,
-            value: stringify(copyAttr(el, kAXValueAttribute)),
-            description: copyAttr(el, kAXDescriptionAttribute) as? String,
-            identifier: copyAttr(el, kAXIdentifierAttribute) as? String,
-            enabled: copyAttr(el, kAXEnabledAttribute) as? Bool,
-            focused: copyAttr(el, kAXFocusedAttribute) as? Bool,
+            role: b.role, subrole: b.subrole,
+            title: b.title, value: b.valueString,
+            description: b.description, identifier: b.identifier,
+            enabled: b.enabled, focused: b.focused,
             actions: acts.isEmpty ? nil : acts,
-            frame: frameOf(el),
+            frame: b.frame,
             axPath: path)
     }
 }
@@ -377,6 +430,20 @@ struct AXHit: Codable {
     let actions: [String]?
     let frame: BoundsJSON?
     let axPath: String
+}
+
+struct AXBundle {
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let valueString: String?
+    let description: String?
+    let identifier: String?
+    let help: String?
+    let enabled: Bool?
+    let focused: Bool?
+    let frame: BoundsJSON?
+    let children: [AXUIElement]
 }
 
 struct FindCriteria: Equatable {
