@@ -81,8 +81,11 @@ enum OverlayClient {
     }
 
     private static func spawnDaemon() {
-        let exe = ProcessInfo.processInfo.arguments.first
-            ?? "/usr/local/bin/kagete"
+        // Always spawn the *same* binary that's running — debug binary spawns
+        // debug daemon, release spawns release. Combined with the flavor-
+        // suffixed socket path in OverlayConfig, this keeps dev and prod
+        // overlays fully isolated.
+        guard let exe = ProcessInfo.processInfo.arguments.first else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: exe)
         process.arguments = ["_overlay-daemon"]

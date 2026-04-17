@@ -32,16 +32,29 @@ enum OverlayConfig {
     /// Duration of the "✓ control returned" ceremony before the daemon exits.
     static let releaseDuration: TimeInterval = 1.5
 
+    /// Debug and release builds use different socket paths and brand labels so
+    /// a locally-built kagete never collides with the installed release binary
+    /// — each spawns and talks to its own daemon.
+    #if DEBUG
+    static let flavor = "dev"
+    #else
+    static let flavor = "release"
+    #endif
+
     static var socketPath: String {
         let uid = getuid()
-        return "/tmp/kagete-\(uid)-overlay.sock"
+        let suffix = flavor == "release" ? "" : "-\(flavor)"
+        return "/tmp/kagete-\(uid)-overlay\(suffix).sock"
     }
 
-    /// Brand label shown on the overlay pill. Defaults to `"kagete"`.
-    /// Override with `KAGETE_OVERLAY_LABEL=MyAgent`.
+    /// Brand label shown on the overlay pill. Defaults to `"kagete"` for
+    /// release builds and `"kagete-dev"` for debug builds so you can tell at
+    /// a glance which binary drew the pill. Override with
+    /// `KAGETE_OVERLAY_LABEL=MyAgent`.
     static var brandLabel: String {
-        let v = ProcessInfo.processInfo.environment["KAGETE_OVERLAY_LABEL"]
-        guard let v = v, !v.isEmpty else { return "kagete" }
-        return v
+        if let v = ProcessInfo.processInfo.environment["KAGETE_OVERLAY_LABEL"], !v.isEmpty {
+            return v
+        }
+        return flavor == "release" ? "kagete" : "kagete-dev"
     }
 }
