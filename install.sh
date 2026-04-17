@@ -49,6 +49,19 @@ URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
 
 echo "→ kagete $TAG ($ARCH)"
 
+# --- skip if already at latest -------------------------------------------
+# `--version` prints the embedded tag (without the leading 'v'). If that
+# matches TAG we have nothing to do.
+
+if [[ -x "$INSTALL_DIR/kagete" ]]; then
+    CURRENT="$("$INSTALL_DIR/kagete" --version 2>/dev/null || true)"
+    if [[ -n "$CURRENT" && "${TAG#v}" == "$CURRENT" ]]; then
+        echo "✓ already at $TAG — nothing to do"
+        echo "  (set KAGETE_INSTALL_DIR to a different path to force reinstall)"
+        exit 0
+    fi
+fi
+
 # --- download + verify ----------------------------------------------------
 
 TMP="$(mktemp -d)"
