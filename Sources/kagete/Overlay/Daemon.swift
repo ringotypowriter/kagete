@@ -149,12 +149,14 @@ final class OverlayDaemon {
         state.label = p.label
         state.mode = .pulse
         state.visible = true
+        relinquishActivation()
 
         let selfRef = self
         Self.runOnMain(after: OverlayConfig.pulseDuration) {
             guard selfRef.activitySeq == seq else { return }
             selfRef.state.mode = .active
             selfRef.state.label = "waiting"
+            selfRef.relinquishActivation()
         }
     }
 
@@ -163,7 +165,16 @@ final class OverlayDaemon {
         state.mode = .released
         state.label = label.isEmpty ? "control returned" : label
         state.visible = true
+        relinquishActivation()
         scheduleExit(after: OverlayConfig.releaseDuration)
+    }
+
+    /// Ensure the daemon app is never the active app. If we accidentally
+    /// stole activation during a SwiftUI re-render, hand it back immediately.
+    private func relinquishActivation() {
+        if NSApp.isActive {
+            NSApp.deactivate()
+        }
     }
 
     // MARK: - Lifecycle
