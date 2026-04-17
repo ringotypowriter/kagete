@@ -14,7 +14,7 @@ enum Capture {
     ) async throws {
         guard Permissions.screenRecording else {
             throw KageteError.notTrusted(
-                "Screen Recording permission not granted. Run `kagete doctor --prompt` or grant it in System Settings → Privacy & Security → Screen Recording.")
+                "Screen Recording permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete — not kagete itself) in System Settings → Privacy & Security → Screen Recording.")
         }
 
         let content = try await withSCKTimeout(seconds: 10, label: "SCShareableContent") {

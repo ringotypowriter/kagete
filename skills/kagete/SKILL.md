@@ -23,15 +23,17 @@ curl -fsSL https://raw.githubusercontent.com/ringotypowriter/kagete/main/install
 
 Installs to `~/.local/bin/kagete`. The installer follows a GitHub redirect (no API token needed) and verifies SHA256 before install. After install, if `~/.local/bin` isn't on PATH, the installer prints the exact shell-rc line to add.
 
-## Preflight
+## Preflight — ALWAYS RUN FIRST
 
-Run once per agent session (or when you see permission errors):
+**Before the first `kagete` call in every session, run `kagete doctor`.** No exceptions. Without the right permissions, `click`/`type`/`key`/`drag` will *silently drop all input events* — commands return `ok:true`, nothing happens in the UI, the agent loops confused. One preflight check up-front saves the session.
 
 ```bash
 kagete doctor
 ```
 
-If Accessibility or Screen Recording is missing, run `kagete doctor --prompt` and tell the user to approve the system dialogs. Without Accessibility, *all* input events silently drop.
+If Accessibility or Screen Recording is missing, surface the exact `hint` from the envelope to the user. **Critical gotcha:** macOS grants these permissions **per-process to the binary that owns the process tree** — which is *not* `kagete`. It's whatever launched it: **Terminal / iTerm2 / Ghostty / Warp / Claude Code / Codex / your agent harness**. The `doctor` output names the detected host process and the System Settings path; relay that verbatim — don't paraphrase, and don't ever tell the user to "add kagete to Accessibility" (that won't work).
+
+`kagete doctor --prompt` triggers the macOS system dialogs for any missing grants, but the user still has to tick the checkbox for the host process in System Settings → Privacy & Security.
 
 ## Two paths: AX and Visual
 

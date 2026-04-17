@@ -53,7 +53,9 @@ KAGETE_RAISE=ax kagete click --app TextEdit --ax-path '…/AXButton[title="Save"
 Error: Accessibility permission not granted.
 ```
 
-macOS sometimes revokes Accessibility when the binary is moved, replaced, or re-signed.
+**Critical gotcha: the permission is not granted to `kagete` itself.** macOS grants Accessibility and Screen Recording *per-process*, and the effective grant belongs to the binary that owns the process tree — i.e., whatever launched kagete. That's **Terminal / iTerm2 / Ghostty / Warp / Claude Code / Codex / the agent harness**, not `kagete`.
+
+Adding `kagete` to the Accessibility list in System Settings **does nothing**. The checkbox has to be for the host process.
 
 **Fix:**
 
@@ -61,7 +63,9 @@ macOS sometimes revokes Accessibility when the binary is moved, replaced, or re-
 kagete doctor --prompt
 ```
 
-Then tell the user to toggle kagete in System Settings → Privacy & Security → Accessibility (sometimes a toggle-off / toggle-on is needed after binary updates).
+The text output of `kagete doctor` names the detected host process and the exact System Settings path. Relay that verbatim to the user — don't substitute "kagete" for it. After the user toggles the right app on, re-run `kagete doctor` to confirm.
+
+macOS also revokes Accessibility when a binary is moved, replaced, or re-signed — if your terminal / harness was updated recently, its checkbox may have silently flipped off. A toggle-off / toggle-on usually refreshes the grant.
 
 ## `find` returns nothing but the element is visible
 

@@ -55,20 +55,28 @@ struct Doctor: AsyncParsableCommand {
         let sr = Permissions.screenRecording
         let result = DoctorResult(accessibility: ax, screenRecording: sr, allGranted: ax && sr)
 
+        let host = Permissions.hostLabel
         if text {
             print("kagete doctor")
             print("  Accessibility     : \(ax ? "granted" : "MISSING")")
             print("  Screen Recording  : \(sr ? "granted" : "MISSING")")
+            if !ax || !sr {
+                print("")
+                print("macOS grants these permissions *per-process* to whichever")
+                print("binary owns the process tree — not to kagete itself. Grant")
+                print("them to \(host) (the process that launched kagete):")
+            }
             if !ax {
-                print("    → System Settings → Privacy & Security → Accessibility → add kagete.")
+                print("    → System Settings → Privacy & Security → Accessibility → add \(host).")
             }
             if !sr {
-                print("    → System Settings → Privacy & Security → Screen Recording → add kagete.")
+                print("    → System Settings → Privacy & Security → Screen Recording → add \(host).")
             }
             if ax && sr {
                 print("\nAll good, leader. ✓")
             } else {
-                print("\nFix the items above, or rerun with --prompt to trigger system dialogs.")
+                print("")
+                print("Or rerun with --prompt to trigger the system dialogs.")
                 throw ExitCode(1)
             }
             return
@@ -77,7 +85,7 @@ struct Doctor: AsyncParsableCommand {
         let missing = [(!ax ? "Accessibility" : nil), (!sr ? "Screen Recording" : nil)].compactMap { $0 }
         let hint: String? = missing.isEmpty
             ? nil
-            : "Missing: \(missing.joined(separator: ", ")). Rerun with --prompt to trigger system dialogs."
+            : "Missing: \(missing.joined(separator: ", ")). macOS grants these per-process to the parent — grant to \"\(host)\" (not kagete) in System Settings → Privacy & Security. Or rerun with --prompt."
         try CLIOut.ok(command: "doctor", result: result, hint: hint)
         if !result.allGranted { throw ExitCode(1) }
     }

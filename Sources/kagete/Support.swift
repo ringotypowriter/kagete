@@ -50,6 +50,49 @@ enum Permissions {
     static func promptScreenRecording() -> Bool {
         CGRequestScreenCaptureAccess()
     }
+
+    /// Name of the process that launched kagete — the terminal, IDE, or
+    /// agent harness. macOS grants Accessibility and Screen Recording
+    /// *per-process* and the effective grant belongs to whichever binary
+    /// owns the process tree. So "add kagete to Accessibility" is wrong
+    /// advice: the user must grant the permission to *this* process
+    /// (Ghostty / iTerm / Terminal / Claude Code / Codex / …). Returns
+    /// nil if the parent name can't be read.
+    static var hostProcessName: String? {
+        let ppid = getppid()
+        let proc = Process()
+        proc.launchPath = "/bin/ps"
+        proc.arguments = ["-o", "comm=", "-p", "\(ppid)"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        do { try proc.run() } catch { return nil }
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let full = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !full.isEmpty else { return nil }
+        // `ps -o comm=` returns the full path on macOS. Take the basename
+        // and strip the `.app/Contents/MacOS/...` tail so "Ghostty.app
+        // /Contents/MacOS/ghostty" becomes "Ghostty".
+        if let appRange = full.range(of: ".app/") {
+            let appPath = String(full[..<appRange.upperBound].dropLast())
+            return (appPath as NSString).lastPathComponent
+                .replacingOccurrences(of: ".app", with: "")
+        }
+        return (full as NSString).lastPathComponent
+    }
+
+    /// Human-readable "where to grant permission" label, baked into error
+    /// messages. Falls back to generic guidance when the parent can't be
+    /// identified.
+    static var hostLabel: String {
+        if let name = hostProcessName, !name.isEmpty {
+            return name
+        }
+        return "the terminal or agent harness running kagete"
+    }
 }
 
 struct TargetOptions: ParsableArguments {
@@ -207,7 +250,7 @@ extension KageteError {
         case .notTrusted(let s):
             return ErrorJSON(code: .permissionDenied, message: s,
                              retryable: false,
-                             hint: "Run `kagete doctor --prompt` and grant the listed permission.")
+                             hint: "Run `kagete doctor --prompt` and grant the listed permission to the process that launched kagete (not to kagete itself).")
         case .notFound(let s):
             let code: ErrorCode = s.contains("No AX element") ? .axElementNotFound : .targetNotFound
             return ErrorJSON(code: code, message: s, retryable: false, hint: nil)

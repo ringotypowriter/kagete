@@ -162,5 +162,5 @@ kagete click --app Finder --ax-path '/AXWindow/AXOutline/AXRow[2]'
 | `Error: No AX windows for pid N` | App closed or hid its windows | Reopen the app, confirm with `kagete windows` |
 | `Error: No window matching "X"` | Title substring wrong | Run `kagete windows --app Foo` to see actual titles |
 | `Error: No AX element matches path …` | Tree shifted since you got the path | Re-run `find`, pick a fresh path |
-| `Accessibility permission not granted` | System privacy gate | `kagete doctor --prompt`, then user approves in System Settings |
+| `Accessibility permission not granted` | System privacy gate | `kagete doctor --prompt`, then user approves **the host process** (terminal / harness, *not* kagete) in System Settings |
 | Events seem to vanish | Target app isn't focused | Make sure `--no-activate` isn't set; confirm window is frontmost |

@@ -26,7 +26,7 @@ enum AXRaise {
     static func raise(pid: pid_t, windowFilter: String?) throws -> Report {
         guard Permissions.accessibility else {
             throw KageteError.notTrusted(
-                "Accessibility permission not granted. Run `kagete doctor --prompt`.")
+                "Accessibility permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete — not kagete itself) in System Settings → Privacy & Security → Accessibility.")
         }
 
         let appEl = AXUIElementCreateApplication(pid)

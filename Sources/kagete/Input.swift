@@ -249,7 +249,7 @@ enum Input {
     private static func ensureAccessibility() throws {
         guard Permissions.accessibility else {
             throw KageteError.notTrusted(
-                "Accessibility permission required to post input events. Run `kagete doctor --prompt`.")
+                "Accessibility permission required to post input events. Run `kagete doctor --prompt`, or grant Accessibility to \"\(Permissions.hostLabel)\" (the process that launched kagete — not kagete itself) in System Settings → Privacy & Security.")
         }
     }
 }

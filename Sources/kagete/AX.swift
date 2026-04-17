@@ -229,7 +229,7 @@ enum AXInspector {
     static func selectWindow(pid: pid_t, windowFilter: String?) throws -> AXUIElement {
         guard Permissions.accessibility else {
             throw KageteError.notTrusted(
-                "Accessibility permission not granted. Run `kagete doctor --prompt` or grant it in System Settings → Privacy & Security → Accessibility.")
+                "Accessibility permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete — not kagete itself) in System Settings → Privacy & Security → Accessibility.")
         }
         let appEl = AXUIElementCreateApplication(pid)
         // Cap AX IPC at 1.5s per call. Default is ~6s, which lets one stuck
