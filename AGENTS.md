@@ -7,7 +7,7 @@
 - `swift build` builds the debug binary.
 - `swift build -c release` builds the optimized release binary used for packaging.
 - `swift test` runs the unit test suite on macOS.
-- `.build/debug/kagete doctor --json` runs the local binary without installing it.
+- `.build/debug/kagete doctor` runs the local binary without installing it (JSON by default; add `--text` for readable output).
 - `./install.sh` installs the CLI into `~/.local/bin` for manual testing.
 
 Use macOS 14+ on Apple Silicon. CI runs `swift build -v` and `swift test -v` on `macos-15`, so local changes should pass the same commands.
