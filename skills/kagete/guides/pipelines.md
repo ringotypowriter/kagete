@@ -163,26 +163,30 @@ kagete click --app "$APP" --ax-path "$ITEM"
 
 ## Pipeline 6 — Wait for a Modal, Dismiss It
 
-Common after destructive or network actions.
+Common after destructive or network actions. `kagete wait` replaces the old bash poll loop — single subprocess, structured timeout, one exit code to branch on.
 
 ```bash
 APP="Foo"
 
-# Trigger the action
-kagete key --app "$APP" cmd+shift+delete
-
-# Poll for the modal's button
-for i in {1..24}; do
-  OK=$(kagete find --app "$APP" --role AXButton --title "OK" --paths-only 2>/dev/null | head -1)
-  if [ -n "$OK" ]; then
-    kagete click --app "$APP" --ax-path "$OK"
-    break
-  fi
-  sleep 0.25
-done
+# Trigger the action, then wait for the modal button and click it.
+kagete key  --app "$APP" cmd+shift+delete && \
+kagete wait --app "$APP" --role AXButton --title "OK" --timeout 6000 && \
+kagete click --app "$APP" --role AXButton --title "OK"
 ```
 
-Up to 6 seconds total — adjust the loop bound for slow confirmations (network saves, system dialogs).
+If the modal might never appear (network dropped, action no-oped), branch on the wait's exit code instead of chaining with `&&`:
+
+```bash
+if OK_PATH=$(kagete wait --app "$APP" --role AXButton --title "OK" --timeout 6000 \
+              | jq -r '.result.hit.axPath'); then
+  kagete click --app "$APP" --ax-path "$OK_PATH"
+else
+  # WAIT_TIMEOUT — surface to the user, diagnose with a screenshot.
+  kagete screenshot --app "$APP" -o /tmp/no-modal.png
+fi
+```
+
+`kagete wait --vanish …` is the symmetric tool for "wait until the spinner / progress bar / toast is gone before the next step" — same shape, inverted predicate.
 
 ---
 

@@ -251,6 +251,60 @@ Flags:
 
 ---
 
+## `kagete wait`
+
+Poll until a condition holds, with a single structured result. Replaces ad-hoc `for i in …; do kagete find …; sleep 0.25; done` loops — one subprocess, one JSON envelope, one exit code.
+
+```bash
+# Wait for any modal button titled "OK" to appear (up to 5 s)
+kagete wait --app TextEdit --role AXButton --title "OK"
+
+# Wait for a specific element's value to land
+kagete wait --app Safari --ax-path '…/AXTextField[id="url"]' --value-contains "github.com"
+
+# Wait for a window to open (or close, with --vanish)
+kagete wait --window-present --app Finder --window "Downloads"
+kagete wait --window-present --app Foo --vanish      # closes
+
+# Plain sleep (no predicate) — useful inside chained pipelines
+kagete wait --ms 300
+```
+
+Modes (exactly one must be specified):
+
+- `--ms N` — fixed sleep, no AX traffic. `--vanish` isn't meaningful here.
+- `--ax-path X` — wait for a specific path to resolve. Pair with `--value-contains V` to wait for that element's value to land (great for post-type confirmation).
+- Element filters (`--role` / `--subrole` / `--title` / `--title-contains` / `--id` / `--description-contains` / `--value-contains` / `--enabled-only` / `--disabled-only`) — same vocabulary as `kagete find`; any non-empty combination selects element mode. Returns when ≥1 hit (or 0 with `--vanish`).
+- `--window-present` — poll `WindowList` for a window matching the target selectors (`--app`/`--bundle`/`--pid` and/or `--window` title substring). With `--vanish`, waits until the window goes away.
+
+Common flags:
+
+- `--vanish` — invert the predicate (wait for it to become false).
+- `--timeout MS` (default `5000`) — total wait budget.
+- `--interval MS` (default `150`) — poll interval between probes.
+- `--max-depth N` (default `64`) — AX recursion cap for element mode.
+- `--text` — terse one-liner (`wait element: appeared in 280ms (3 polls)`) instead of the envelope.
+- Standard target flags for every non-`--ms` mode.
+
+`result` shape:
+
+```json
+{
+  "mode": "element",          // "ms" | "path" | "element" | "window"
+  "vanish": false,
+  "elapsedMs": 280,
+  "pollCount": 3,
+  "hit":    { … AXHit … },    // element / path modes when appeared
+  "window": { … WindowRecord … }  // window mode when appeared
+}
+```
+
+On timeout the envelope flips to `{ok:false, error:{code:"WAIT_TIMEOUT", retryable:true, message:"wait timed out after … (N polls, mode=…)"}}` and exit code is `1`. `retryable:true` lets agents branch into "widen the filter / bump `--timeout` / screenshot and diagnose" paths instead of treating it as a hard failure.
+
+Gotcha — **poll cost dominates short timeouts.** On heavy AX trees (Electron, Chromium-embedded apps) a single `find` traversal can cost 500 ms+, so `--timeout 500 --interval 100` may only fit one probe before the deadline. Either raise `--timeout`, drop `--max-depth`, or narrow the filter so each probe is cheaper.
+
+---
+
 ## `kagete raise`
 
 Raise a target window via the AX API — bypasses the activation broker that sometimes contests focus with tools like CleanShot X.

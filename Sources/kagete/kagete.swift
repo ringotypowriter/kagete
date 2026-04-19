@@ -20,6 +20,7 @@ struct Kagete: AsyncParsableCommand {
             Key.self,
             Scroll.self,
             Drag.self,
+            Wait.self,
             Release.self,
             Raise.self,
             Overlay.self,

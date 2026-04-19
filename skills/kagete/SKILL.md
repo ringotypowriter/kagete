@@ -112,6 +112,7 @@ If `--app` matches multiple running apps, kagete errors with a numbered list —
 | `kagete key` | Key combo (`cmd+s`, `return`, …) | Shortcuts, modal dismissals |
 | `kagete scroll` | Wheel ticks | Long content, menus |
 | `kagete drag` | Press → move → release | Select text, reorder lists, move items |
+| `kagete wait` | Poll for element / window / value, or fixed sleep | Waiting for modals, post-submit transitions, app launches |
 
 ## Deep Dives
 
@@ -152,6 +153,7 @@ On failure the shape flips to `{ok:false, command, target?, error:{code, message
 | `AX_ELEMENT_NOT_FOUND` | `--ax-path` didn't resolve in the current tree | no — re-`find` |
 | `AX_NO_FRAME` | Element located but frame is empty/hidden | no |
 | `SCK_TIMEOUT` | ScreenCaptureKit hung past the 15 s guard | **yes** |
+| `WAIT_TIMEOUT` | `kagete wait` hit `--timeout` before the condition held | **yes** — widen the filter, raise `--timeout`, or screenshot to diagnose |
 | `INTERNAL` | Genuine runtime/invariant failure | no |
 
 Key fields to know:
@@ -169,7 +171,7 @@ Every action command accepts `--text` (or equivalent, documented per command) to
 3. **`axPath` beats coordinates when both exist.** Paths are stable across redraws; coords break on first resize.
 4. **Read `verify` before re-screenshotting.** For `type`/`key` it gives you the focused element post-action; for `click`/`drag` it gives the actual cursor coord. Only screenshot to confirm when `verify` is insufficient — e.g. you need to know what UI the click *hit* (not just where the cursor went), or anything visual-only.
 5. **Activation is automatic.** Input commands call `activate()` on the target app and wait 150 ms before firing events. Pass `--no-activate` to opt out.
-6. **Sleep between semantic steps, not inside them.** kagete paces low-level events (mouse-down → mouse-up, inter-keystroke) internally — don't wrap those. But between distinct high-level steps (click → menu renders, type → network request returns, `key cmd+s` → save dialog appears), **add a short `sleep`** so the app has time to transition before the next kagete call reads its post-action state. Typical values: `sleep 0.2` after menu/context opens, `sleep 0.3–0.5` after a modal or view transition, poll loops with `sleep 0.25` for network-bound waits. Without these, `find`/`screenshot` may run before the UI has caught up and return stale state.
+6. **Sleep between semantic steps, not inside them.** kagete paces low-level events (mouse-down → mouse-up, inter-keystroke) internally — don't wrap those. But between distinct high-level steps (click → menu renders, type → network request returns, `key cmd+s` → save dialog appears), pause before the next kagete call reads its post-action state. Prefer **`kagete wait`** over blind `sleep` when the transition has a detectable signal (modal button appears, value lands, window opens, spinner vanishes with `--vanish`) — it exits as soon as the condition holds and structurally reports timeout. Use bare `sleep` only when no predicate fits: `sleep 0.2` after a menu opens, `sleep 0.3–0.5` after a short view swap.
 7. **Chain sequential steps in one bash/exec call.** A pipeline of `kagete click && sleep 0.2 && kagete key && …` should live in **one** shell invocation, not split across multiple tool calls. Each tool-call boundary costs latency and context; chaining with `&&` keeps the sequence atomic (a failing step aborts the rest) and couples each action with its post-step sleep in one place. Reserve separate tool calls for branching on the **result** of a previous pipeline — not for stepping through a fixed sequence.
 8. **One target per command.** Chain sub-steps of a single-app flow; don't try to batch multiple apps inside one `kagete` invocation.
 9. **Error-code branching, not message parsing.** `jq -e '.ok'` to gate; `jq -r '.error.code'` to route. Messages are for humans; codes are for you.

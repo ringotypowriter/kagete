@@ -37,6 +37,160 @@ import Testing
     }
 }
 
+@Suite struct WaitModeResolverTests {
+    // Helpers --------------------------------------------------------------
+
+    private func resolve(
+        hasAppSelector: Bool = false,
+        windowTitleFilter: String? = nil,
+        axPath: String? = nil,
+        pathValueContains: String? = nil,
+        criteria: FindCriteria = FindCriteria(),
+        windowPresent: Bool = false,
+        ms: Int? = nil,
+        vanish: Bool = false
+    ) throws -> Wait.Mode {
+        try Wait.resolveMode(
+            hasAppSelector: hasAppSelector,
+            windowTitleFilter: windowTitleFilter,
+            axPath: axPath,
+            pathValueContains: pathValueContains,
+            elementCriteria: criteria,
+            windowPresent: windowPresent,
+            ms: ms, vanish: vanish)
+    }
+
+    private func expectInvalidArgument(
+        messageContains needle: String? = nil,
+        _ block: () throws -> Wait.Mode,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        do {
+            _ = try block()
+            Issue.record(
+                "expected KageteError.invalidArgument, got a Mode",
+                sourceLocation: sourceLocation)
+        } catch let err as KageteError {
+            guard case .invalidArgument(let msg) = err else {
+                Issue.record(
+                    "expected invalidArgument, got \(err)",
+                    sourceLocation: sourceLocation)
+                return
+            }
+            if let needle, !msg.contains(needle) {
+                Issue.record(
+                    "message \"\(msg)\" missing \"\(needle)\"",
+                    sourceLocation: sourceLocation)
+            }
+        } catch {
+            Issue.record(
+                "expected KageteError, got \(error)",
+                sourceLocation: sourceLocation)
+        }
+    }
+
+    // Mode selection -------------------------------------------------------
+
+    @Test func msModeWithPositiveDelay() throws {
+        let mode = try resolve(ms: 250)
+        #expect(mode == .ms(250))
+    }
+
+    @Test func msModeAcceptsZero() throws {
+        let mode = try resolve(ms: 0)
+        #expect(mode == .ms(0))
+    }
+
+    @Test func axPathWithTargetSelector() throws {
+        let mode = try resolve(hasAppSelector: true, axPath: "/AXWindow/AXButton")
+        #expect(mode == .axPath("/AXWindow/AXButton", valueContains: nil))
+    }
+
+    @Test func axPathCarriesValueContains() throws {
+        let mode = try resolve(
+            hasAppSelector: true, axPath: "/AXWindow/AXTextField",
+            pathValueContains: "github.com")
+        #expect(mode == .axPath("/AXWindow/AXTextField", valueContains: "github.com"))
+    }
+
+    @Test func elementModeFromCriteria() throws {
+        var c = FindCriteria()
+        c.role = "AXButton"
+        c.titleContains = "Save"
+        let mode = try resolve(hasAppSelector: true, criteria: c)
+        #expect(mode == .element(c))
+    }
+
+    @Test func windowPresentWithAppSelector() throws {
+        let mode = try resolve(hasAppSelector: true, windowPresent: true)
+        #expect(mode == .windowPresent)
+    }
+
+    @Test func windowPresentWithOnlyTitleFilter() throws {
+        let mode = try resolve(
+            hasAppSelector: false,
+            windowTitleFilter: "Downloads",
+            windowPresent: true)
+        #expect(mode == .windowPresent)
+    }
+
+    // Validation errors ----------------------------------------------------
+
+    @Test func rejectsNoMode() {
+        expectInvalidArgument(messageContains: "No wait mode selected") {
+            try self.resolve()
+        }
+    }
+
+    @Test func rejectsMultipleModes() {
+        var c = FindCriteria()
+        c.role = "AXButton"
+        expectInvalidArgument(messageContains: "Multiple wait modes") {
+            try self.resolve(hasAppSelector: true, criteria: c, ms: 100)
+        }
+    }
+
+    @Test func rejectsAxPathPlusWindowPresent() {
+        expectInvalidArgument(messageContains: "Multiple wait modes") {
+            try self.resolve(
+                hasAppSelector: true, axPath: "/AXWindow",
+                windowPresent: true)
+        }
+    }
+
+    @Test func rejectsNegativeMs() {
+        expectInvalidArgument(messageContains: "--ms") {
+            try self.resolve(ms: -1)
+        }
+    }
+
+    @Test func rejectsVanishWithMs() {
+        expectInvalidArgument(messageContains: "--vanish") {
+            try self.resolve(ms: 100, vanish: true)
+        }
+    }
+
+    @Test func rejectsAxPathWithoutTarget() {
+        expectInvalidArgument(messageContains: "--ax-path") {
+            try self.resolve(hasAppSelector: false, axPath: "/AXWindow/AXButton")
+        }
+    }
+
+    @Test func rejectsElementModeWithoutTarget() {
+        var c = FindCriteria()
+        c.role = "AXButton"
+        expectInvalidArgument(messageContains: "Element filters require") {
+            try self.resolve(hasAppSelector: false, criteria: c)
+        }
+    }
+
+    @Test func rejectsWindowPresentWithoutAnySelector() {
+        expectInvalidArgument(messageContains: "--window-present") {
+            try self.resolve(hasAppSelector: false, windowPresent: true)
+        }
+    }
+}
+
 @Suite struct FindCriteriaTests {
     @Test func emptyCriteriaHasNoFilter() {
         let c = FindCriteria()

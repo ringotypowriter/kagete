@@ -184,6 +184,7 @@ enum ErrorCode: String, Codable {
     case targetNotFound = "TARGET_NOT_FOUND"
     case ambiguousTarget = "AMBIGUOUS_TARGET"
     case sckTimeout = "SCK_TIMEOUT"
+    case waitTimeout = "WAIT_TIMEOUT"
     case internalError = "INTERNAL"
 }
 
@@ -294,10 +295,12 @@ extension KageteError {
         case .failure(let s):
             let code: ErrorCode
             if s.contains("ScreenCaptureKit timed out") { code = .sckTimeout }
+            else if s.contains("wait timed out") { code = .waitTimeout }
             else if s.contains("no resolvable frame") { code = .axNoFrame }
             else { code = .internalError }
+            let retryable = (code == .sckTimeout || code == .waitTimeout)
             return ErrorJSON(code: code, message: s,
-                             retryable: code == .sckTimeout, hint: nil)
+                             retryable: retryable, hint: nil)
         }
     }
 }
