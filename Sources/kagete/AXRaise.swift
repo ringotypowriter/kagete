@@ -26,7 +26,7 @@ enum AXRaise {
     static func raise(pid: pid_t, windowFilter: String?) throws -> Report {
         guard Permissions.accessibility else {
             throw KageteError.notTrusted(
-                "Accessibility permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete — not kagete itself) in System Settings → Privacy & Security → Accessibility.")
+                "Accessibility permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete, not kagete itself) in System Settings → Privacy & Security → Accessibility.")
         }
 
         let appEl = AXUIElementCreateApplication(pid)
@@ -54,31 +54,24 @@ enum AXRaise {
     }
 }
 
-/// Picks between AX-raise and `NSRunningApplication.activate()` at runtime.
+/// Explicit activation dispatcher. The agent picks the method at the CLI
+/// level via `kagete activate --method app|ax|both`; there is no `.auto`
+/// fallback — fallback decisions belong to the agent, not the binary.
 ///
-/// `KAGETE_RAISE` env var:
-/// - `auto` — AX frontmost + window raise first, fall back to `app.activate()` if needed
-/// - `ax`   — AX frontmost + window raise only
-/// - `app`  — classic `NSRunningApplication.activate()` only
-/// - `both` — always do both: AX raise first, then `app.activate()`
-/// - unset / anything else → `auto`
+/// - `app`  — classic `NSRunningApplication.activate()`
+/// - `ax`   — AX frontmost + window raise (different code path, bypasses
+///            the macOS 14 activation-token broker; useful when floating
+///            panels like CleanShot X contest the default path)
+/// - `both` — AX raise first, then `app.activate()`
 enum Activator {
-    enum Method: String { case auto, ax, app, both }
+    enum Method: String { case ax, app, both }
 
-    static var method: Method {
-        method(for: ProcessInfo.processInfo.environment["KAGETE_RAISE"])
-    }
-
-    static func method(for rawValue: String?) -> Method {
-        Method(rawValue: rawValue?.lowercased() ?? "") ?? .auto
-    }
-
-    static func activate(_ target: ResolvedTarget) async throws {
+    /// Perform the chosen activation sequence. Always followed by a 300 ms
+    /// settle window — long enough for Electron / Chromium-backed apps to
+    /// finish their JS-side activation handlers before the next command
+    /// reads AX state.
+    static func activateExplicit(_ target: ResolvedTarget, method: Method) async throws {
         switch method {
-        case .auto:
-            if !autoRaise(target) {
-                target.app.activate()
-            }
         case .app:
             target.app.activate()
         case .ax:
@@ -87,26 +80,6 @@ enum Activator {
             _ = try AXRaise.raise(pid: target.pid, windowFilter: target.windowFilter)
             target.app.activate()
         }
-        // 300 ms — long enough for Electron / Chromium-backed apps to
-        // finish their JS-side activation handlers (which is when DOM
-        // focus settles into search bars, panels, etc). 150 ms was
-        // empirically too tight: type's auto-focus pass would read AX
-        // before the app had finished processing the prior command's
-        // shortcut, so we'd find the wrong input.
         try await Task.sleep(nanoseconds: 300_000_000)
-    }
-
-    private static func autoRaise(_ target: ResolvedTarget) -> Bool {
-        do {
-            let report = try AXRaise.raise(pid: target.pid, windowFilter: target.windowFilter)
-            return report.changedFocus
-        } catch let error as KageteError {
-            switch error {
-            case .notTrusted, .notFound, .ambiguous, .invalidArgument, .failure:
-                return false
-            }
-        } catch {
-            return false
-        }
     }
 }

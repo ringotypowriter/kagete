@@ -5,7 +5,7 @@ import Foundation
 struct Wait: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wait",
-        abstract: "Poll until an AX element, window, or value appears (or vanishes) — or sleep for a fixed delay.")
+        abstract: "Poll until an AX element, window, or value appears (or vanishes), or sleep for a fixed delay.")
 
     @OptionGroup var target: TargetOptions
 
@@ -18,19 +18,10 @@ struct Wait: AsyncParsableCommand {
     @Option(name: .long, help: "Match AX subrole.")
     var subrole: String?
 
-    @Option(name: .long, help: "Exact title match.")
-    var title: String?
+    @Option(name: .long, help: "Case-insensitive substring matched across title, value, description, help, identifier.")
+    var textContains: String?
 
-    @Option(name: .long, help: "Substring of title (case-insensitive).")
-    var titleContains: String?
-
-    @Option(name: [.customLong("id"), .customLong("identifier")], help: "AXIdentifier.")
-    var identifier: String?
-
-    @Option(name: .long, help: "Substring of AXDescription (case-insensitive).")
-    var descriptionContains: String?
-
-    @Option(name: .long, help: "Substring of AXValue (case-insensitive). Pairs with --ax-path to wait for a specific element's value.")
+    @Option(name: .long, help: "Substring of AXValue (case-insensitive). Path-mode only: pairs with --ax-path to wait for that specific element's value. In element mode use --text-contains.")
     var valueContains: String?
 
     @Flag(name: .long, help: "Only enabled elements.")
@@ -88,13 +79,17 @@ struct Wait: AsyncParsableCommand {
     }
 
     private func runInner() async throws {
-        // --value-contains is shared: on path mode it filters the path's
-        // value; otherwise it's an element-filter predicate.
+        // `--value-contains` is path-mode only: it refines a specific
+        // `--ax-path` by requiring that element's value to contain X. In
+        // element mode it used to piggyback on the same flag, but text
+        // matching is now collapsed into `--text-contains` (which already
+        // covers the value field). If an agent passes `--value-contains`
+        // without `--ax-path`, the flag would be silently dropped, so
+        // reject at parse time. The guard lives in `resolveMode` so tests
+        // can exercise it directly.
         let elementCriteria = FindCriteria(
-            role: role, subrole: subrole, title: title,
-            titleContains: titleContains, identifier: identifier,
-            descriptionContains: descriptionContains,
-            valueContains: axPath == nil ? valueContains : nil,
+            role: role, subrole: subrole,
+            textContains: textContains,
             enabledOnly: enabledOnly, disabledOnly: disabledOnly)
         let mode = try Self.resolveMode(
             hasAppSelector: target.hasAppSelector,
@@ -195,10 +190,20 @@ struct Wait: AsyncParsableCommand {
         guard chosen.count == 1 else {
             if chosen.isEmpty {
                 throw KageteError.invalidArgument(
-                    "No wait mode selected. Use --ms, --ax-path, --window-present, or element filters (--role / --title / --title-contains / ...).")
+                    "No wait mode selected. Use --ms, --ax-path, --window-present, or element filters (--role / --subrole / --text-contains / --enabled-only / --disabled-only).")
             }
             throw KageteError.invalidArgument(
-                "Multiple wait modes specified (\(chosen.joined(separator: ", "))) — pick one.")
+                "Multiple wait modes specified (\(chosen.joined(separator: ", "))). Pick one.")
+        }
+
+        // `--value-contains` only applies to path mode. In element / ms /
+        // window-present modes it would be silently dropped, which was the
+        // previous behavior; make it loud instead. Agents that want an
+        // element-mode value predicate use `--text-contains` (it matches
+        // the value field along with every other label).
+        if pathValueContains != nil, axPath == nil {
+            throw KageteError.invalidArgument(
+                "--value-contains only applies to --ax-path mode. For element mode use --text-contains (it already matches the value field along with title, description, help, and identifier).")
         }
 
         if let n = ms {
@@ -220,6 +225,20 @@ struct Wait: AsyncParsableCommand {
         }
         guard hasAppSelector else {
             throw KageteError.invalidArgument("Element filters require --app/--bundle/--pid.")
+        }
+        // Guard against the "query echoes in the search UI" failure mode:
+        // `--text-contains X` alone will match the text field you just typed
+        // X into (its own AXValue contains X), so wait returns on the first
+        // poll without actually waiting for results to render. Require a
+        // type filter alongside so the search textfield can't be what
+        // satisfies the condition. Doc alone is not enough; agents ignore
+        // doc. The binary refuses the shape.
+        if elementCriteria.textContains != nil
+            && elementCriteria.role == nil
+            && elementCriteria.subrole == nil
+        {
+            throw KageteError.invalidArgument(
+                "wait --text-contains requires --role (or --subrole). Without a type filter, wait will match the search text field you just typed into (its own AXValue contains the query) and return on the first poll. Pick a role that only exists once results render, e.g. --role AXStaticText, --role AXRow, --role AXCell.")
         }
         return .element(elementCriteria)
     }

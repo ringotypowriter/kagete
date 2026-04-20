@@ -229,7 +229,7 @@ enum AXInspector {
     static func selectWindow(pid: pid_t, windowFilter: String?) throws -> AXUIElement {
         guard Permissions.accessibility else {
             throw KageteError.notTrusted(
-                "Accessibility permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete — not kagete itself) in System Settings → Privacy & Security → Accessibility.")
+                "Accessibility permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete, not kagete itself) in System Settings → Privacy & Security → Accessibility.")
         }
         let appEl = AXUIElementCreateApplication(pid)
         // Cap AX IPC at 1.5s per call. Default is ~6s, which lets one stuck
@@ -316,6 +316,47 @@ enum AXInspector {
 
     static func performAction(_ el: AXUIElement, action: String) -> Bool {
         AXUIElementPerformAction(el, action as CFString) == .success
+    }
+
+    /// Raw `AXError` from an action so callers can distinguish "not supported"
+    /// (probe via `actionNames` first) from "app rejected the call". Used by
+    /// the primitive `press` / `action` / `scroll-to` commands, which never
+    /// fall back silently — they surface whichever code the AX API returned.
+    static func performActionRaw(_ el: AXUIElement, action: String) -> AXError {
+        AXUIElementPerformAction(el, action as CFString)
+    }
+
+    /// Write `kAXFocusedAttribute = true` on the element. Returns the raw
+    /// `AXError` so `focus` can surface non-success without reinterpreting.
+    /// The value to write is a CFBoolean; for many apps this requires the
+    /// element to be part of the currently-focused window, but we do not
+    /// enforce that here — the command is a primitive.
+    @discardableResult
+    static func setFocused(_ el: AXUIElement) -> AXError {
+        AXUIElementSetAttributeValue(
+            el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    }
+
+    /// Probe whether an attribute is writable on this element. The AX API
+    /// exposes this explicitly via `AXUIElementIsAttributeSettable`, so we
+    /// can produce a clean "not settable" diagnostic before attempting a
+    /// write — no guessing from `set` error codes, no spurious writes on
+    /// read-only fields.
+    static func isAttributeSettable(_ el: AXUIElement, attribute: String) -> Bool {
+        var settable: DarwinBoolean = false
+        let err = AXUIElementIsAttributeSettable(el, attribute as CFString, &settable)
+        return err == .success && settable.boolValue
+    }
+
+    /// Write a string into the element's `kAXValueAttribute`. Returns the
+    /// raw `AXError` so callers can distinguish generic failure from other
+    /// cases; gate on `isAttributeSettable` first for clean diagnostics.
+    /// Used by `set-value` as the background-capable alternative to
+    /// synthesized keyboard events — no focus steal, no HID traffic.
+    @discardableResult
+    static func setStringValue(_ el: AXUIElement, to string: String) -> AXError {
+        AXUIElementSetAttributeValue(
+            el, kAXValueAttribute as CFString, string as CFString)
     }
 
     /// Read the app's AXFocusedUIElement and reconstruct its role/title for a
@@ -583,17 +624,11 @@ enum AXInspector {
     private static func matches(bundle b: AXBundle, criteria: FindCriteria) -> Bool {
         if let want = criteria.role, b.role != want { return false }
         if let want = criteria.subrole, b.subrole != want { return false }
-        let title = b.title ?? ""
-        let description = b.description ?? ""
-        let value = b.valueString ?? ""
-        if let want = criteria.title, title != want { return false }
-        if let want = criteria.titleContains,
-           !title.localizedCaseInsensitiveContains(want) { return false }
-        if let want = criteria.identifier, b.identifier != want { return false }
-        if let want = criteria.descriptionContains,
-           !description.localizedCaseInsensitiveContains(want) { return false }
-        if let want = criteria.valueContains,
-           !value.localizedCaseInsensitiveContains(want) { return false }
+        if let want = criteria.textContains {
+            let fields = [b.title, b.valueString, b.description, b.help, b.identifier]
+            let hit = fields.contains { ($0 ?? "").localizedCaseInsensitiveContains(want) }
+            if !hit { return false }
+        }
         if criteria.enabledOnly, b.enabled != true { return false }
         if criteria.disabledOnly, b.enabled == true { return false }
         return true
@@ -663,20 +698,25 @@ struct AXBundle {
     let children: [AXUIElement]
 }
 
+/// Single query surface for `find` / `wait`. Text matching is intentionally
+/// collapsed into one field (`textContains`) that searches every
+/// human-readable label the element exposes. Role and subrole remain as
+/// type filters, not text filters. Agents do not need to guess which AX
+/// attribute carries a given string — one flag matches them all.
 struct FindCriteria: Equatable {
     var role: String?
     var subrole: String?
-    var title: String?
-    var titleContains: String?
-    var identifier: String?
-    var descriptionContains: String?
-    var valueContains: String?
+    /// Case-insensitive "contains" across `title`, `value`, `description`,
+    /// `help`, `identifier`. SwiftUI / Catalyst apps put the semantic
+    /// label almost exclusively in `description`; legacy AppKit puts it
+    /// in `title`; some cells surface it only as `value`. One flag spans
+    /// all of them.
+    var textContains: String?
     var enabledOnly: Bool = false
     var disabledOnly: Bool = false
 
     var hasAnyFilter: Bool {
-        role != nil || subrole != nil || title != nil || titleContains != nil
-            || identifier != nil || descriptionContains != nil || valueContains != nil
+        role != nil || subrole != nil || textContains != nil
             || enabledOnly || disabledOnly
     }
 }

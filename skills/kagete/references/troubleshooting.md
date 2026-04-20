@@ -23,29 +23,31 @@ Our events post at `.cghidEventTap` (below session), so any session tap sees the
 
 ## Target app won't come to front
 
-`kagete click ...` runs without error but focus jumps back to the previous app, or nothing visibly happens. Happens most often when:
+`kagete activate --app X` returns `ACTIVATE_FAILED`, or your menu-bar shortcut (`cmd+S` via `kagete key`) has no effect. Common causes:
 
 - Another tool holds activation (CleanShot recording toolbar, QuickTime recorder)
-- The CLI is launched from a non-frontmost shell and the macOS 14+ activation broker rejects `NSRunningApplication.activate()`
+- The CLI is launched from a non-frontmost shell and the macOS 14+ activation-token broker rejects `NSRunningApplication.activate()`
 
-**Fix — use the AX-raise path** which bypasses the activation broker. This is now the default activation path; `KAGETE_RAISE=ax` remains useful when you want to force AX-only behavior:
+`kagete activate` exposes three methods; agent picks based on what you're fighting:
+
+| `--method` | Path | Use when |
+|---|---|---|
+| `app` (default) | `NSRunningApplication.activate()` | Standard activation, window-unaware (pass no `--window`) |
+| `ax` | `AXFrontmost` attribute + `AXRaiseAction` on a specific window | The activation broker is contested, *or* you need to raise a specific window via `--window` |
+| `both` | AX raise first, then `app.activate()` | Belt-and-suspenders for flaky apps |
 
 ```bash
-# Standalone — raise a window without any input
+# Standalone AX-only raise — no window-server notification
 kagete raise --app TextEdit
 
-# Or set env var to route every activation through AX
-KAGETE_RAISE=ax kagete click --app TextEdit --ax-path '…/AXButton[title="Save"]'
+# Default — whole-app activation, no window filter
+kagete activate --app TextEdit
+
+# Window-specific — must use ax/both because `app` is window-unaware
+kagete activate --app Safari --window "GitHub" --method ax
 ```
 
-`KAGETE_RAISE` values:
-
-| Value | Activation path |
-|---|---|
-| unset / `auto` | AX raise first, then `app.activate()` only if AX raise couldn't take effect |
-| `ax` | `AXFrontmost` + `AXRaise(window)` — bypasses activation broker |
-| `app` | `NSRunningApplication.activate()` only |
-| `both` | AX raise first, then `app.activate()` unconditionally |
+Note: `kagete activate --method app` rejects `--window` with `INVALID_ARGUMENT` — `NSRunningApplication.activate()` has no notion of specific windows, so silently ignoring the filter would be wrong.
 
 ## Permission errors appear mid-run
 
@@ -75,22 +77,23 @@ Two different root causes:
 
 Fixes, in order:
 
-1. Broaden the filter: `--title-contains` instead of `--title`, drop `--role`
-2. Re-run once after a short delay (up to ~500 ms for SwiftUI cold renders)
-3. Try alternate attributes: `--value-contains` / `--description-contains`
-4. Fall back to `inspect --max-depth 8` to see the actual tree and pick a sibling-indexed path
+1. Shorten `--text-contains` or drop `--role`. `--text-contains` already scans title, value, description, help, identifier; if it still misses, the substring itself is probably off.
+2. Re-run once after a short delay (up to ~500 ms for SwiftUI cold renders).
+3. Fall back to `inspect --max-depth 8` to see the actual tree and pick a sibling-indexed path.
 
-**B. Custom-drawn UI — go visual.** Some apps render entire surfaces with custom drawing and never publish the visible text through AX. Common patterns: custom-rendered list views, Electron apps with aggressive tree-shaking, game launchers, canvas-based UIs. Diagnostic: `find --value-contains <visible text> --limit 5` returns `[]` for text you can clearly see on screen.
+**B. Custom-drawn UI: go visual.** Some apps render entire surfaces with custom drawing and never publish the visible text through AX. Common patterns: custom-rendered list views, Electron apps with aggressive tree-shaking, game launchers, canvas-based UIs. Diagnostic: `find --text-contains <visible text> --limit 5` returns `[]` for text you can clearly see on screen.
 
 When this happens, switch to the visual path:
 
 ```bash
 # Grid-annotated screenshot — labels show absolute screen coords every
-# 200 points, matching what `click --x --y` uses directly.
+# 200 points, matching what `click-at --x --y` uses directly.
 kagete screenshot --app "QQ音乐" -o /tmp/view.png
 
 # Read /tmp/view.png, pick the coord off the grid, click.
-kagete click --x 496 --y 375 --count 2
+# (Activate first — coord clicks on a backgrounded window can be eaten by click-to-raise.)
+kagete activate --app "QQ音乐"
+kagete click-at --app "QQ音乐" --x 496 --y 375 --count 2
 ```
 
 `screenshot` captures at a sensible default for agent consumption (~1 MB PNG for a typical window). Pass `--clean` to drop the grid overlay, `--grid-pitch 100` for denser labeling when targeting small UI.

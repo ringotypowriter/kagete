@@ -39,22 +39,25 @@ enum Input {
     /// a more human cadence.
     static let interClickDelayMicros: UInt32 = 180_000
 
-    static func click(at point: CGPoint, button: MouseButton = .left, count: Int = 1) throws {
+    /// Synthesize clicks at an exact screen-space point. The primitive is
+    /// deliberately narrow:
+    ///
+    /// - No cursor warp and no `CGAssociateMouseAndMouseCursorPosition`.
+    ///   Movement is a separate primitive (`Input.move` / `kagete move`) —
+    ///   the agent sequences them explicitly when needed. Clicks without
+    ///   a preceding move are "phantom clicks": the target app sees the
+    ///   click at `point` with no prior motion, which most controls accept.
+    /// - No activation. Targets that are not frontmost may still receive
+    ///   the click, but AppKit's click-to-raise interception can eat the
+    ///   first click. Agents should call `activate` first if that matters.
+    /// - `toPid` routes through `CGEvent.postToPid` so the click reaches
+    ///   only that process — useful for background click synthesis.
+    static func click(
+        at point: CGPoint, button: MouseButton = .left,
+        count: Int = 1, toPid pid: pid_t? = nil
+    ) throws {
         try ensureAccessibility()
         let source = try makeEventSource()
-        // Detach cursor from the real mouse and warp to the exact target
-        // before any synthesis. Without this, mouseMoved posted at
-        // .cghidEventTap goes through pointer acceleration — a real mouse
-        // delta concurrent with our synthesis can shift the landing site
-        // by hundreds of points. `CGWarpMouseCursorPosition` bypasses
-        // acceleration entirely; the reassociate in `defer` hands the
-        // cursor back to the user immediately after.
-        CGAssociateMouseAndMouseCursorPosition(0)
-        defer { CGAssociateMouseAndMouseCursorPosition(1) }
-        CGWarpMouseCursorPosition(point)
-
-        moveCursor(to: point, source: source)
-        usleep(interEventDelayMicros)
 
         let clicks = max(1, count)
         let firstEventNumber = Int64(CGEventSource.counterForEventType(
@@ -71,7 +74,7 @@ enum Input {
                 eventNumber: eventNumber,
                 pressure: 1)
             {
-                down.post(tap: .cghidEventTap)
+                postMouse(down, toPid: pid)
             }
             usleep(interEventDelayMicros)
 
@@ -84,7 +87,7 @@ enum Input {
                 eventNumber: eventNumber,
                 pressure: 0)
             {
-                up.post(tap: .cghidEventTap)
+                postMouse(up, toPid: pid)
             }
 
             // Only pause *between* clicks — sleeping after the final up
@@ -92,6 +95,28 @@ enum Input {
             if click < clicks {
                 usleep(interClickDelayMicros)
             }
+        }
+    }
+
+    /// Warp the cursor to a point and emit the matching `mouseMoved` event.
+    /// Pure primitive — no click, no drag. Used by `kagete move` and as a
+    /// building block agents can sequence before `click` when a target
+    /// depends on prior pointer motion (some hover-aware controls).
+    static func move(to point: CGPoint) throws {
+        try ensureAccessibility()
+        let source = try makeEventSource()
+        CGAssociateMouseAndMouseCursorPosition(0)
+        defer { CGAssociateMouseAndMouseCursorPosition(1) }
+        CGWarpMouseCursorPosition(point)
+        moveCursor(to: point, source: source)
+        usleep(interEventDelayMicros)
+    }
+
+    private static func postMouse(_ event: CGEvent, toPid pid: pid_t?) {
+        if let pid = pid {
+            event.postToPid(pid)
+        } else {
+            event.post(tap: .cghidEventTap)
         }
     }
 
@@ -110,7 +135,15 @@ enum Input {
         }
     }
 
-    static func type(_ text: String) throws {
+    /// Synthesize a Unicode text stream and deliver it via keyboard events.
+    /// When `toPid` is supplied, events are posted with `CGEvent.postToPid` —
+    /// the target process sees the keystrokes in its own responder chain
+    /// without the events passing through the global HID tap, which means
+    /// they do *not* land in whatever app the user currently has frontmost.
+    /// When `toPid` is nil, falls back to `post(tap: .cghidEventTap)` — the
+    /// legacy "type into whoever has focus" behavior, kept for target-less
+    /// invocations.
+    static func type(_ text: String, toPid pid: pid_t? = nil) throws {
         try ensureAccessibility()
         for scalar in text.unicodeScalars {
             let s = String(scalar)
@@ -125,10 +158,7 @@ enum Input {
                     up.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
                 }
             }
-            down.post(tap: .cghidEventTap)
-            usleep(interEventDelayMicros)
-            up.post(tap: .cghidEventTap)
-            usleep(interEventDelayMicros)
+            postKeyboard(down, up: up, toPid: pid)
         }
     }
 
@@ -191,7 +221,10 @@ enum Input {
         usleep(interEventDelayMicros)
     }
 
-    static func key(_ combo: KeyCombo) throws {
+    /// Send a single key combo. See `type` for the `toPid` semantics —
+    /// PID-targeted delivery keeps the combo scoped to the target process
+    /// so it doesn't land in whatever app the user currently has focused.
+    static func key(_ combo: KeyCombo, toPid pid: pid_t? = nil) throws {
         try ensureAccessibility()
         guard
             let down = CGEvent(keyboardEventSource: nil, virtualKey: combo.keyCode, keyDown: true),
@@ -201,10 +234,24 @@ enum Input {
         }
         down.flags = combo.flags
         up.flags = combo.flags
-        down.post(tap: .cghidEventTap)
-        usleep(interEventDelayMicros)
-        up.post(tap: .cghidEventTap)
-        usleep(interEventDelayMicros)
+        postKeyboard(down, up: up, toPid: pid)
+    }
+
+    /// Post a keyboard down/up pair, routing through `postToPid` when a
+    /// target process is known. Keeps the inter-event pacing invariant —
+    /// both tap and PID paths need the same 3 ms gap to avoid drops.
+    private static func postKeyboard(_ down: CGEvent, up: CGEvent, toPid pid: pid_t?) {
+        if let pid = pid {
+            down.postToPid(pid)
+            usleep(interEventDelayMicros)
+            up.postToPid(pid)
+            usleep(interEventDelayMicros)
+        } else {
+            down.post(tap: .cghidEventTap)
+            usleep(interEventDelayMicros)
+            up.post(tap: .cghidEventTap)
+            usleep(interEventDelayMicros)
+        }
     }
 
     static func makeEventSource() throws -> CGEventSource {
@@ -249,7 +296,7 @@ enum Input {
     private static func ensureAccessibility() throws {
         guard Permissions.accessibility else {
             throw KageteError.notTrusted(
-                "Accessibility permission required to post input events. Run `kagete doctor --prompt`, or grant Accessibility to \"\(Permissions.hostLabel)\" (the process that launched kagete — not kagete itself) in System Settings → Privacy & Security.")
+                "Accessibility permission required to post input events. Run `kagete doctor --prompt`, or grant Accessibility to \"\(Permissions.hostLabel)\" (the process that launched kagete, not kagete itself) in System Settings → Privacy & Security.")
         }
     }
 }

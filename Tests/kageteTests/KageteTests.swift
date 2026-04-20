@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import kagete
 
@@ -116,9 +117,69 @@ import Testing
     @Test func elementModeFromCriteria() throws {
         var c = FindCriteria()
         c.role = "AXButton"
-        c.titleContains = "Save"
+        c.textContains = "Save"
         let mode = try resolve(hasAppSelector: true, criteria: c)
         #expect(mode == .element(c))
+    }
+
+    @Test func elementModeAllowsTextContainsWithSubrole() throws {
+        var c = FindCriteria()
+        c.subrole = "AXCloseButton"
+        c.textContains = "Save"
+        let mode = try resolve(hasAppSelector: true, criteria: c)
+        #expect(mode == .element(c))
+    }
+
+    // The "query echoes in the search UI" guard: without a type filter,
+    // wait would match the text field the query was typed into and return
+    // in ~50 ms on the first poll. The guard is enforced at the binary
+    // layer, not just documented, because docs are soft and agents ignore
+    // them.
+    @Test func textContainsWithoutRoleOrSubroleIsRejected() {
+        var c = FindCriteria()
+        c.textContains = "Welcome to New York"
+        expectInvalidArgument(messageContains: "--text-contains") {
+            try resolve(hasAppSelector: true, criteria: c)
+        }
+    }
+
+    @Test func textContainsWithEnabledOnlyStillRejected() {
+        var c = FindCriteria()
+        c.textContains = "Continue"
+        c.enabledOnly = true
+        expectInvalidArgument(messageContains: "--text-contains") {
+            try resolve(hasAppSelector: true, criteria: c)
+        }
+    }
+
+    // `--value-contains` in element mode used to piggy-back on the same
+    // flag as path mode but was silently dropped after the filter strip.
+    // The guard makes the drop loud: any non-path mode carrying
+    // `--value-contains` parse-fails with a pointer to `--text-contains`.
+
+    @Test func valueContainsWithoutAxPathInElementModeIsRejected() {
+        var c = FindCriteria()
+        c.role = "AXTextField"
+        expectInvalidArgument(messageContains: "--value-contains") {
+            try resolve(
+                hasAppSelector: true,
+                pathValueContains: "github.com",
+                criteria: c)
+        }
+    }
+
+    @Test func valueContainsWithoutAxPathInMsModeIsRejected() {
+        expectInvalidArgument(messageContains: "--value-contains") {
+            try resolve(pathValueContains: "anything", ms: 250)
+        }
+    }
+
+    @Test func valueContainsWithAxPathStillFlows() throws {
+        let mode = try resolve(
+            hasAppSelector: true,
+            axPath: "/AXWindow/AXTextField",
+            pathValueContains: "github.com")
+        #expect(mode == .axPath("/AXWindow/AXTextField", valueContains: "github.com"))
     }
 
     @Test func windowPresentWithAppSelector() throws {
@@ -187,6 +248,53 @@ import Testing
     @Test func rejectsWindowPresentWithoutAnySelector() {
         expectInvalidArgument(messageContains: "--window-present") {
             try self.resolve(hasAppSelector: false, windowPresent: true)
+        }
+    }
+}
+
+/// PID-targeted primitives (`type`, `key`, `click-at`, `scroll`) route
+/// events to the resolved process PID; `--window` never travels into the
+/// post. Accepting it silently would leak a lie into the response
+/// envelope (target.window populated as if the filter was honored). The
+/// guard fires before any side-effect work.
+@Suite struct TargetOptionsWindowGuardTests {
+    @Test func allowsMissingWindow() throws {
+        let opts = try TargetOptions.parse(["--app", "Safari"])
+        try opts.assertNoWindowFilter(command: "type")
+    }
+
+    @Test func rejectsWindowWithCommandNameInMessage() {
+        do {
+            let opts = try TargetOptions.parse(
+                ["--app", "Safari", "--window", "GitHub"])
+            try opts.assertNoWindowFilter(command: "type")
+            Issue.record("expected KageteError.invalidArgument")
+        } catch let err as KageteError {
+            guard case .invalidArgument(let msg) = err else {
+                Issue.record("expected invalidArgument, got \(err)")
+                return
+            }
+            #expect(msg.contains("--window"))
+            #expect(msg.contains("type"))
+        } catch {
+            Issue.record("unexpected \(error)")
+        }
+    }
+
+    @Test func commandLabelIsThreadedThroughMessage() {
+        do {
+            let opts = try TargetOptions.parse(
+                ["--app", "Safari", "--window", "GitHub"])
+            try opts.assertNoWindowFilter(command: "click-at")
+            Issue.record("expected throw")
+        } catch let err as KageteError {
+            guard case .invalidArgument(let msg) = err else {
+                Issue.record("expected invalidArgument, got \(err)")
+                return
+            }
+            #expect(msg.contains("click-at"))
+        } catch {
+            Issue.record("unexpected \(error)")
         }
     }
 }
@@ -277,46 +385,42 @@ import Testing
     }
 }
 
-@Suite struct ClickPlanningTests {
-    @Test func coordinateClickWithTargetResolvesForActivation() throws {
-        #expect(Click.shouldResolveTarget(
-            axPath: nil,
-            target: try TargetOptions.parse(["--app", "TextEdit"]),
-            activate: true))
+@Suite struct ActivatorMethodTests {
+    // The `.auto` fallback was removed: activation methods are explicit.
+    // `Method(rawValue:)` is the new contract, exercised here so a rename
+    // of the raw values immediately breaks the test (the CLI depends on
+    // these strings for `kagete activate --method …`).
+
+    @Test func recognizedMethodsParse() {
+        #expect(Activator.Method(rawValue: "app") == .app)
+        #expect(Activator.Method(rawValue: "ax") == .ax)
+        #expect(Activator.Method(rawValue: "both") == .both)
     }
 
-    @Test func coordinateClickWithoutTargetSkipsResolution() throws {
-        #expect(!Click.shouldResolveTarget(
-            axPath: nil,
-            target: try TargetOptions.parse([]),
-            activate: true))
-    }
-
-    @Test func coordinateClickWithNoActivateSkipsResolution() throws {
-        #expect(!Click.shouldResolveTarget(
-            axPath: nil,
-            target: try TargetOptions.parse(["--bundle", "com.apple.TextEdit"]),
-            activate: false))
-    }
-
-    @Test func axPathClickAlwaysResolvesTarget() throws {
-        #expect(Click.shouldResolveTarget(
-            axPath: "/AXWindow/AXButton[title=\"Save\"]",
-            target: try TargetOptions.parse([]),
-            activate: false))
+    @Test func unknownMethodReturnsNil() {
+        #expect(Activator.Method(rawValue: "auto") == nil)
+        #expect(Activator.Method(rawValue: "bogus") == nil)
+        #expect(Activator.Method(rawValue: "") == nil)
     }
 }
 
-@Suite struct ActivatorMethodTests {
-    @Test func defaultMethodIsAutoRaise() {
-        #expect(Activator.method(for: nil) == .auto)
-        #expect(Activator.method(for: "bogus") == .auto)
+@Suite struct ActionAllowlistTests {
+    @Test func allowlistIncludesExpectedActions() {
+        #expect(Action.allowed.contains("AXShowMenu"))
+        #expect(Action.allowed.contains("AXIncrement"))
+        #expect(Action.allowed.contains("AXDecrement"))
+        #expect(Action.allowed.contains("AXPick"))
+        #expect(Action.allowed.contains("AXConfirm"))
+        #expect(Action.allowed.contains("AXCancel"))
     }
 
-    @Test func explicitMethodOverridesStillParse() {
-        #expect(Activator.method(for: "app") == .app)
-        #expect(Activator.method(for: "ax") == .ax)
-        #expect(Activator.method(for: "both") == .both)
+    @Test func allowlistExcludesPressAndScrollTo() {
+        // These each have their own dedicated verb — `press` and `scroll-to`.
+        // If they leaked into the generic `action` allowlist, we'd have two
+        // ways to spell the same thing, which is exactly the "agent guesses
+        // which verb" problem we're removing.
+        #expect(!Action.allowed.contains("AXPress"))
+        #expect(!Action.allowed.contains("AXScrollToVisible"))
     }
 }
 
@@ -352,5 +456,79 @@ import Testing
         #expect(event.location.x == point.x)
         #expect(event.location.y == point.y)
         #expect(event.getIntegerValueField(.mouseEventButtonNumber) == Int64(CGMouseButton.right.rawValue))
+    }
+}
+
+@Suite struct SetValueResultTests {
+    @Test func encodesAllFields() throws {
+        let result = SetValue.SetValueResult(
+            axPath: "/AXWindow/AXTextField[title=\"Name\"]",
+            role: "AXTextField",
+            title: "Name",
+            length: 5,
+            valueSet: true,
+            valueMatches: true,
+            preValue: "",
+            postValue: "hello")
+        let data = try JSONEncoder().encode(result)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let json = try #require(obj)
+        #expect(json["axPath"] as? String == "/AXWindow/AXTextField[title=\"Name\"]")
+        #expect(json["role"] as? String == "AXTextField")
+        #expect(json["title"] as? String == "Name")
+        #expect(json["length"] as? Int == 5)
+        #expect(json["valueSet"] as? Bool == true)
+        #expect(json["valueMatches"] as? Bool == true)
+        #expect(json["preValue"] as? String == "")
+        #expect(json["postValue"] as? String == "hello")
+    }
+
+    @Test func encodesNullablesWhenMissing() throws {
+        let result = SetValue.SetValueResult(
+            axPath: "/AXWindow/AXTextField",
+            role: nil,
+            title: nil,
+            length: 0,
+            valueSet: true,
+            valueMatches: false,
+            preValue: nil,
+            postValue: nil)
+        let data = try JSONEncoder().encode(result)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let json = try #require(obj)
+        #expect(json["axPath"] as? String == "/AXWindow/AXTextField")
+        #expect(json["valueMatches"] as? Bool == false)
+        // Nullable fields serialize absent rather than NSNull under the default
+        // JSONEncoder — the contract agents rely on.
+        #expect(json["role"] == nil)
+        #expect(json["title"] == nil)
+        #expect(json["preValue"] == nil)
+        #expect(json["postValue"] == nil)
+    }
+}
+
+@Suite struct SetValueErrorClassificationTests {
+    // Sentinels in the error message drive the stable ErrorCode. If the
+    // SetValue command's message strings drift, these tests break and
+    // `asErrorJSON` silently regresses to `INTERNAL` — which would hide
+    // the background-write semantics from every agent on the other side.
+
+    @Test func notSettableMessageClassifiesAsAxNotSettable() {
+        let err = KageteError.failure(
+            "AX value not settable on /AXWindow/AXStaticText (role=AXStaticText). Fall back to click + type.")
+        #expect(err.asErrorJSON.code == .axNotSettable)
+        #expect(err.asErrorJSON.retryable == false)
+    }
+
+    @Test func writeFailedMessageClassifiesAsAxWriteFailed() {
+        let err = KageteError.failure(
+            "AX write failed on /AXWindow/AXTextField (AXError -25205).")
+        #expect(err.asErrorJSON.code == .axWriteFailed)
+        #expect(err.asErrorJSON.retryable == false)
+    }
+
+    @Test func unrelatedFailureRemainsInternal() {
+        let err = KageteError.failure("Something entirely different went wrong.")
+        #expect(err.asErrorJSON.code == .internalError)
     }
 }

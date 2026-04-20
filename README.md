@@ -52,19 +52,30 @@ Grant both in System Settings → Privacy & Security. Without Accessibility, inp
 
 ## Commands
 
-| Command | What | Example |
-|---|---|---|
-| `doctor` | Check permissions | `kagete doctor` |
-| `windows` | List on-screen windows | `kagete windows --app Safari` |
-| `inspect` | Full AX tree of a window | `kagete inspect --app Safari --max-depth 6` |
-| `find` | Filtered element search | `kagete find --app Safari --role AXButton --title-contains Save` |
-| `screenshot` | Window → PNG | `kagete screenshot --app Safari -o shot.png` |
-| `click` | Click at axPath or coords | `kagete click --app Safari --ax-path '…/AXButton[title="Save"]'` |
-| `type` | Type text into focused element | `kagete type --app TextEdit "hello 🌍"` |
-| `key` | Keyboard combo | `kagete key --app Safari cmd+t` |
-| `scroll` | Wheel ticks | `kagete scroll --dy -5` |
-| `drag` | Press → move → release | `kagete drag --from-x 100 --from-y 200 --to-x 400 --to-y 200` |
-| `release` | Tell the overlay the agent is done | `kagete release` |
+kagete exposes narrow primitives. Every command does exactly one thing; fallback and sequencing are the agent's job.
+
+| Layer | Command | What | Example |
+|---|---|---|---|
+| Setup | `doctor` | Check permissions | `kagete doctor` |
+| Read | `windows` | List on-screen windows | `kagete windows --app Safari` |
+| Read | `inspect` | Full AX tree of a window | `kagete inspect --app Safari --max-depth 6` |
+| Read | `find` | Filtered element search | `kagete find --app Safari --role AXButton --text-contains Save` |
+| Read | `screenshot` | Window → PNG | `kagete screenshot --app Safari -o shot.png` |
+| AX | `press` | Fire `AXPress` on an element | `kagete press --app Safari --ax-path '…/AXButton[title="Reload"]'` |
+| AX | `action` | Fire a named AX action | `kagete action --app Finder --ax-path '…/AXRow[0]' --name AXShowMenu` |
+| AX | `focus` | Set `kAXFocusedAttribute = true` | `kagete focus --app Safari --ax-path '…/AXTextField[title="Address"]'` |
+| AX | `set-value` | Write `kAXValueAttribute` (background text input) | `kagete set-value --app Safari --ax-path '…' "hello"` |
+| AX | `scroll-to` | Fire `AXScrollToVisible` | `kagete scroll-to --app Xcode --ax-path '…/AXRow[42]'` |
+| App | `activate` | Bring the app to foreground (`--method app\|ax\|both`) | `kagete activate --app Safari` |
+| App | `raise` | AX-level window raise | `kagete raise --app TextEdit` |
+| HID | `click-at` | CGEvent click at `(x, y)` — no warp, no activate | `kagete click-at --x 640 --y 480` |
+| HID | `move` | Warp the cursor to `(x, y)` | `kagete move --x 320 --y 240` |
+| HID | `type` | Synthesize Unicode text (PID-targeted when `--app` is set) | `kagete type --app TextEdit "hello 🌍"` |
+| HID | `key` | Single key combo | `kagete key --app Safari cmd+t` |
+| HID | `scroll` | Wheel ticks at current cursor position | `kagete scroll --dy -5` |
+| HID | `drag` | Press → move → release | `kagete drag --from-x 100 --from-y 200 --to-x 400 --to-y 200` |
+| Control | `wait` | Poll for element / window / value | `kagete wait --app TextEdit --role AXButton --text-contains OK` |
+| Overlay | `release` | Retire the awareness overlay | `kagete release` |
 
 Every command emits JSON by default. Use `--paths-only` on `find` for shell-friendly pipelines.
 
@@ -72,18 +83,25 @@ Every command emits JSON by default. Use `--paths-only` on `find` for shell-frie
 
 ```sh
 # Discover a button
-kagete find --app Safari --role AXButton --title-contains "Reload" --paths-only
+kagete find --app Safari --role AXButton --text-contains "Reload" --paths-only
 # → /AXWindow/AXToolbar/AXButton[title="Reload this page"]
 
-# Click it
-kagete click --app Safari --ax-path '/AXWindow/AXToolbar/AXButton[title="Reload this page"]'
+# Press it (AX semantic — works on backgrounded windows, no cursor movement)
+kagete press --app Safari --ax-path '/AXWindow/AXToolbar/AXButton[title="Reload this page"]'
 
-# Type into a field
-kagete click --app Mail --ax-path '…/AXTextField[title="To:"]'
+# Fill a text field — two flavors:
+#   (a) background AX write, no focus theft
+kagete set-value --app Mail --ax-path '…/AXTextField[title="To:"]' "leader@example.com"
+#   (b) keyboard synthesis with explicit focus
+kagete focus --app Mail --ax-path '…/AXTextField[title="To:"]'
 kagete type  --app Mail "leader@example.com"
 
-# Shortcut
-kagete key --app TextEdit cmd+s
+# Shortcut — menu shortcuts generally need the app frontmost first
+kagete activate --app TextEdit
+kagete key      --app TextEdit cmd+s
+
+# Coordinate click — pure CGEvent at (x, y), no warp, no activate
+kagete click-at --x 640 --y 480
 
 # Agent signals completion
 kagete release
@@ -112,8 +130,8 @@ Whenever kagete takes an action, a small pill slides out from below the notch (o
 Customize or disable:
 
 ```sh
-KAGETE_OVERLAY=0 kagete click …               # silent, no pill
-KAGETE_OVERLAY_LABEL=Exusiai kagete click …   # "Exusiai · TextEdit · click"
+KAGETE_OVERLAY=0 kagete press …                # silent, no pill
+KAGETE_OVERLAY_LABEL=Exusiai kagete press …    # "Exusiai · TextEdit · press"
 kagete overlay status                          # query helper state
 kagete overlay stop                            # force-retire the helper
 ```

@@ -44,7 +44,7 @@ kagete emits these escapes when building paths, and expects them on input. A tit
 In shell scripts, prefer **single quotes** around the whole `--ax-path` argument so you don't have to escape the inner `"`:
 
 ```bash
-kagete click --app Foo --ax-path '/AXWindow/AXButton[title="Save"]'
+kagete press --app Foo --ax-path '/AXWindow/AXButton[title="Save"]'
 ```
 
 ## Stability Rules
@@ -71,8 +71,12 @@ Re-resolve the path first to confirm it still matches:
 kagete find --app Foo --title "Save" --paths-only
 # → /AXWindow/AXButton[title="Save"]
 
-# If that path matches what you have, click is safe:
-kagete click --app Foo --ax-path '/AXWindow/AXButton[title="Save"]'
+# If that path still matches, use the primitive that fits the element's actions:
+kagete press --app Foo --ax-path '/AXWindow/AXButton[title="Save"]'        # AXPress-advertising button
+# or
+kagete action --app Foo --ax-path '…' --name AXShowMenu                    # AXShowMenu-advertising row
+# or
+kagete set-value --app Foo --ax-path '…/AXTextField' "value"               # writable AXValue
 ```
 
 If `find` returns zero hits for a path you expected, the tree shifted — re-run `inspect`/`find` and pick a new path.

@@ -111,6 +111,19 @@ struct TargetOptions: ParsableArguments {
     var hasAppSelector: Bool {
         bundle != nil || app != nil || pid != nil
     }
+
+    /// Enforce that `--window` was not passed on a command that only routes
+    /// by PID. These commands never read `windowFilter` downstream, so
+    /// silently accepting `--window` would leak a lie into the response
+    /// envelope (`target.window` populated as if the filter was honored
+    /// when in reality the event lands in whichever of the app's windows
+    /// currently owns first responder). Fail fast instead.
+    func assertNoWindowFilter(command: String) throws {
+        if window != nil {
+            throw KageteError.invalidArgument(
+                "--window is not honored by `\(command)`. The event routes to the process PID and lands in whichever window currently owns first responder. Call `kagete activate --app X --window \"Y\" --method ax` (or `kagete raise`) first, then re-run this command without --window.")
+        }
+    }
 }
 
 struct ResolvedTarget {
@@ -151,7 +164,7 @@ enum TargetResolver {
             let list = candidates
                 .map { "  pid \($0.processIdentifier): \($0.localizedName ?? "?") [\($0.bundleIdentifier ?? "?")]" }
                 .joined(separator: "\n")
-            throw KageteError.ambiguous("Multiple matches — narrow with --pid or --bundle:\n\(list)")
+            throw KageteError.ambiguous("Multiple matches. Narrow with --pid or --bundle:\n\(list)")
         }
 
         let app = candidates[0]
@@ -179,6 +192,12 @@ enum JSON {
 enum ErrorCode: String, Codable {
     case axElementNotFound = "AX_ELEMENT_NOT_FOUND"
     case axNoFrame = "AX_NO_FRAME"
+    case axNotSettable = "AX_NOT_SETTABLE"
+    case axWriteFailed = "AX_WRITE_FAILED"
+    case axActionUnsupported = "AX_ACTION_UNSUPPORTED"
+    case axActionFailed = "AX_ACTION_FAILED"
+    case axFocusFailed = "AX_FOCUS_FAILED"
+    case activateFailed = "ACTIVATE_FAILED"
     case permissionDenied = "PERMISSION_DENIED"
     case invalidArgument = "INVALID_ARGUMENT"
     case targetNotFound = "TARGET_NOT_FOUND"
@@ -297,6 +316,12 @@ extension KageteError {
             if s.contains("ScreenCaptureKit timed out") { code = .sckTimeout }
             else if s.contains("wait timed out") { code = .waitTimeout }
             else if s.contains("no resolvable frame") { code = .axNoFrame }
+            else if s.contains("AX value not settable") { code = .axNotSettable }
+            else if s.contains("AX write failed") { code = .axWriteFailed }
+            else if s.contains("AX action unsupported") { code = .axActionUnsupported }
+            else if s.contains("AX action failed") { code = .axActionFailed }
+            else if s.contains("AX focus failed") { code = .axFocusFailed }
+            else if s.contains("Activate failed") { code = .activateFailed }
             else { code = .internalError }
             let retryable = (code == .sckTimeout || code == .waitTimeout)
             return ErrorJSON(code: code, message: s,

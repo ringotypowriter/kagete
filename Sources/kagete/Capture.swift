@@ -14,7 +14,7 @@ enum Capture {
     ) async throws {
         guard Permissions.screenRecording else {
             throw KageteError.notTrusted(
-                "Screen Recording permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete — not kagete itself) in System Settings → Privacy & Security → Screen Recording.")
+                "Screen Recording permission not granted. Run `kagete doctor --prompt`, or grant it to \"\(Permissions.hostLabel)\" (the process that launched kagete, not kagete itself) in System Settings → Privacy & Security → Screen Recording.")
         }
 
         let content = try await withSCKTimeout(seconds: 10, label: "SCShareableContent") {
@@ -301,7 +301,7 @@ enum Capture {
         // its last click actually landed.
         let badgeText = cursorInside
             ? "cursor: (\(Int(cursor.x)), \(Int(cursor.y)))"
-            : "cursor: (\(Int(cursor.x)), \(Int(cursor.y))) — off-window"
+            : "cursor: (\(Int(cursor.x)), \(Int(cursor.y))) off-window"
         let badgeFont = CTFontCreateWithName("Menlo" as CFString, 12, nil)
         let badgeAttrs: [NSAttributedString.Key: Any] = [
             .font: badgeFont,
@@ -368,7 +368,7 @@ enum Capture {
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw KageteError.failure(
-                    "\(label) timed out after \(Int(seconds))s — ScreenCaptureKit did not respond. Retry, or check if the target window is minimized / off-screen.")
+                    "\(label) timed out after \(Int(seconds))s. ScreenCaptureKit did not respond. Retry, or check if the target window is minimized / off-screen.")
             }
             guard let first = try await group.next() else {
                 throw KageteError.failure("\(label) produced no result.")

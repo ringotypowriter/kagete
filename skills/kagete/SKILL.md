@@ -52,14 +52,14 @@ Safari, Finder, TextEdit, Xcode, System Settings, Notes, Mail, Slack desktop, mo
 └───────────┘    └───────────┘    └───────┘    └────────┘
 ```
 
-- Queries: `kagete find --role AXButton --title-contains "Save"`
-- Actions: `kagete click --ax-path '…'` — automatically uses `AXPress` when the element advertises it, which works on occluded or scrolled-off targets
+- Queries: `kagete find --role AXButton --text-contains "Save"`
+- Actions: `kagete press --ax-path '…'` — semantic `AXPress`, works on occluded or scrolled-off targets with no cursor movement. Use `kagete action --name AXShowMenu|AXIncrement|…` for the other AX actions, `kagete set-value` for text, `kagete focus` before `kagete type` when a field needs AX focus installed.
 - Stability: `axPath` survives resizes, redraws, theme changes
 - Prefer this path when `find` returns what you're looking for with coords
 
 ### 2. Visual path — for custom-drawn / AX-hostile apps
 
-Custom-drawn apps, Electron apps with optimized-away trees, games, canvas-based UIs, embedded webviews that hide text from AX. **Diagnostic: `find --value-contains <visible text>` returns `[]` for text clearly on screen → flip to Visual.**
+Custom-drawn apps, Electron apps with optimized-away trees, games, canvas-based UIs, embedded webviews that hide text from AX. **Diagnostic: `find --text-contains <visible text>` returns `[]` for text clearly on screen → flip to Visual.**
 
 ```
 ┌──────────────┐    ┌──────────┐    ┌──────────────┐    ┌────────────────┐
@@ -100,19 +100,30 @@ If `--app` matches multiple running apps, kagete errors with a numbered list —
 
 ## Commands at a Glance
 
-| Command | Purpose | First reach for… |
+**Primitives only.** Every command does exactly one thing in one way — no hidden fallback, no auto-activate, no auto-focus. You compose them based on the `actions` list in `find` output and the error codes returned. If something is missing (e.g. a button doesn't advertise AXPress), you see that in the data and pick the next primitive yourself.
+
+| Command | Purpose | Layer |
 |---|---|---|
-| `kagete doctor` | Check permissions | Start of every session |
-| `kagete windows` | List on-screen windows | "What's open right now?" |
-| `kagete inspect` | Full AX tree of one window | Exploring unfamiliar UIs |
-| `kagete find` | Filtered element search | **Default for locating a target** |
-| `kagete screenshot` | Window → PNG with coordinate grid + cursor crosshair | Visual path; verify clicks |
-| `kagete click` | Click by axPath or coords | Buttons, links, text fields |
-| `kagete type` | Type text into focused element | After clicking a field |
-| `kagete key` | Key combo (`cmd+s`, `return`, …) | Shortcuts, modal dismissals |
-| `kagete scroll` | Wheel ticks | Long content, menus |
-| `kagete drag` | Press → move → release | Select text, reorder lists, move items |
-| `kagete wait` | Poll for element / window / value, or fixed sleep | Waiting for modals, post-submit transitions, app launches |
+| `kagete doctor` | Check permissions | Setup |
+| `kagete windows` | List on-screen windows | Read |
+| `kagete inspect` | Full AX tree of one window | Read |
+| `kagete find` | Filtered element search — includes `actions` per hit | Read |
+| `kagete screenshot` | Window → PNG with coordinate grid + cursor crosshair | Read |
+| `kagete press` | Fire `AXPress` on an element | AX semantic |
+| `kagete action` | Fire a named AX action (AXShowMenu, AXIncrement, AXDecrement, AXPick, AXConfirm, AXCancel) | AX semantic |
+| `kagete focus` | Set `kAXFocusedAttribute = true` on an element | AX semantic |
+| `kagete set-value` | Write `kAXValueAttribute` on an element (background text input) | AX semantic |
+| `kagete scroll-to` | Fire `AXScrollToVisible` on an element | AX semantic |
+| `kagete raise` | AX-level window raise | App control |
+| `kagete activate` | Bring app to foreground (`--method app\|ax\|both`) | App control |
+| `kagete click-at` | CGEvent click at (x, y) — no warp, no activate | HID |
+| `kagete move` | Warp the cursor to (x, y) | HID |
+| `kagete type` | Synthesize Unicode text — PID-targeted when a target is resolved | HID |
+| `kagete key` | Single key combo — PID-targeted when a target is resolved | HID |
+| `kagete scroll` | Wheel ticks at current cursor position | HID |
+| `kagete drag` | Press → move → release (coords or AX paths) | HID |
+| `kagete wait` | Poll for element / window / value, or fixed sleep | Control flow |
+| `kagete release` | Retire the awareness overlay | Overlay |
 
 ## Deep Dives
 
@@ -152,6 +163,12 @@ On failure the shape flips to `{ok:false, command, target?, error:{code, message
 | `AMBIGUOUS_TARGET` | `--app "Claude"` matched multiple apps | no — narrow with `--bundle`/`--pid` |
 | `AX_ELEMENT_NOT_FOUND` | `--ax-path` didn't resolve in the current tree | no — re-`find` |
 | `AX_NO_FRAME` | Element located but frame is empty/hidden | no |
+| `AX_NOT_SETTABLE` | `set-value` target does not expose a writable `AXValue` | no — use `focus` + `type` |
+| `AX_WRITE_FAILED` | `set-value` write call returned non-success from AX | no — input likely rejected by the app |
+| `AX_ACTION_UNSUPPORTED` | `press` / `action` / `scroll-to` target doesn't advertise the action | no — inspect `result.actions` in `find` output and pick a supported verb |
+| `AX_ACTION_FAILED` | Element advertised the action but AX call returned non-success | no — usually means the app intercepted the call |
+| `AX_FOCUS_FAILED` | `focus` target rejected `kAXFocusedAttribute` | no — web/DOM inputs route focus through the event loop; use `click-at` on the element frame first |
+| `ACTIVATE_FAILED` | `activate` didn't make the target frontmost | no — retry with a different `--method`, or check for a modal dialog on another app |
 | `SCK_TIMEOUT` | ScreenCaptureKit hung past the 15 s guard | **yes** |
 | `WAIT_TIMEOUT` | `kagete wait` hit `--timeout` before the condition held | **yes** — widen the filter, raise `--timeout`, or screenshot to diagnose |
 | `INTERNAL` | Genuine runtime/invariant failure | no |
@@ -167,11 +184,14 @@ Every action command accepts `--text` (or equivalent, documented per command) to
 ## Key Principles
 
 1. **Try AX first, flip to Visual on evidence.** Start with `find`. If `result.count == 0` for text you can see on screen, the app is custom-drawn — switch to screenshot + coords without hesitation.
-2. **Prefer `find` over `inspect --tree`.** Most windows have 1000+ AX nodes. `inspect` (default) returns a compact summary — use it only for survey. `find --role AXButton --title-contains "Save"` is the targeted query.
+2. **Prefer `find` over `inspect --tree`.** Most windows have 1000+ AX nodes. `inspect` (default) returns a compact summary; use it only for survey. `find --role AXButton --text-contains "Save"` is the targeted query.
 3. **`axPath` beats coordinates when both exist.** Paths are stable across redraws; coords break on first resize.
-4. **Read `verify` before re-screenshotting.** For `type`/`key` it gives you the focused element post-action; for `click`/`drag` it gives the actual cursor coord. Only screenshot to confirm when `verify` is insufficient — e.g. you need to know what UI the click *hit* (not just where the cursor went), or anything visual-only.
-5. **Activation is automatic.** Input commands call `activate()` on the target app and wait 150 ms before firing events. Pass `--no-activate` to opt out.
+4. **Read `verify` before re-screenshotting.** For `type`/`key` it gives you the focused element post-action; for `drag` it gives the actual cursor coord. For AX semantic verbs (`press`, `action`, `focus`, `set-value`) the `result` already carries the post-action element state (role, title, `valueMatches`, advertised `actions`). Only screenshot to confirm when result/verify is insufficient — e.g. something visual-only, or when the downstream UI shape matters.
+5. **Activation is NOT automatic.** Input commands (`type`, `key`, `click-at`, `drag`, `scroll`) no longer activate the target app — you call `kagete activate --app X` yourself when the target needs to be frontmost (typical for NSMenu shortcuts and coord-based clicks on backgrounded windows). AX semantic verbs (`press`, `action`, `focus`, `set-value`, `scroll-to`) never need activation; they write/read the AX layer directly on whatever process you name.
+    - **PID-targeted HID.** `type` and `key` route through `CGEvent.postToPid(pid)` whenever a target is resolved — events enter the target process's responder chain, not the global HID tap, so they do **not** leak to the user's frontmost app. Without a target, they fall back to the HID tap.
+    - **Text input without focus theft.** Prefer `set-value` when the element accepts a writable `AXValue`. When `set-value` returns `AX_NOT_SETTABLE` (Electron/web inputs, custom NSViews), call `focus` + `type --app X` instead.
+    - **Clicks on backgrounded apps.** Coord-based `click-at` lands as a "phantom click" — the target sees the click without preceding mouse motion. Most controls accept this. If the target needs real motion (hover handlers) sequence `move` then `click-at`. If the target refuses clicks while not frontmost, sequence `activate` first.
 6. **Sleep between semantic steps, not inside them.** kagete paces low-level events (mouse-down → mouse-up, inter-keystroke) internally — don't wrap those. But between distinct high-level steps (click → menu renders, type → network request returns, `key cmd+s` → save dialog appears), pause before the next kagete call reads its post-action state. Prefer **`kagete wait`** over blind `sleep` when the transition has a detectable signal (modal button appears, value lands, window opens, spinner vanishes with `--vanish`) — it exits as soon as the condition holds and structurally reports timeout. Use bare `sleep` only when no predicate fits: `sleep 0.2` after a menu opens, `sleep 0.3–0.5` after a short view swap.
-7. **Chain sequential steps in one bash/exec call.** A pipeline of `kagete click && sleep 0.2 && kagete key && …` should live in **one** shell invocation, not split across multiple tool calls. Each tool-call boundary costs latency and context; chaining with `&&` keeps the sequence atomic (a failing step aborts the rest) and couples each action with its post-step sleep in one place. Reserve separate tool calls for branching on the **result** of a previous pipeline — not for stepping through a fixed sequence.
+7. **Chain sequential steps in one bash/exec call.** A pipeline of `kagete press && sleep 0.2 && kagete key && …` should live in **one** shell invocation, not split across multiple tool calls. Each tool-call boundary costs latency and context; chaining with `&&` keeps the sequence atomic (a failing step aborts the rest) and couples each action with its post-step sleep in one place. Reserve separate tool calls for branching on the **result** of a previous pipeline — not for stepping through a fixed sequence.
 8. **One target per command.** Chain sub-steps of a single-app flow; don't try to batch multiple apps inside one `kagete` invocation.
 9. **Error-code branching, not message parsing.** `jq -e '.ok'` to gate; `jq -r '.error.code'` to route. Messages are for humans; codes are for you.

@@ -15,8 +15,15 @@ struct Kagete: AsyncParsableCommand {
             Inspect.self,
             Find.self,
             Screenshot.self,
-            Click.self,
+            Press.self,
+            Action.self,
+            Focus.self,
+            ScrollTo.self,
+            Activate.self,
+            ClickAt.self,
+            Move.self,
             TypeText.self,
+            SetValue.self,
             Key.self,
             Scroll.self,
             Drag.self,
@@ -64,7 +71,7 @@ struct Doctor: AsyncParsableCommand {
             if !ax || !sr {
                 print("")
                 print("macOS grants these permissions *per-process* to whichever")
-                print("binary owns the process tree — not to kagete itself. Grant")
+                print("binary owns the process tree, not kagete itself. Grant")
                 print("them to \(host) (the process that launched kagete):")
             }
             if !ax {
@@ -86,7 +93,7 @@ struct Doctor: AsyncParsableCommand {
         let missing = [(!ax ? "Accessibility" : nil), (!sr ? "Screen Recording" : nil)].compactMap { $0 }
         let hint: String? = missing.isEmpty
             ? nil
-            : "Missing: \(missing.joined(separator: ", ")). macOS grants these per-process to the parent — grant to \"\(host)\" (not kagete) in System Settings → Privacy & Security. Or rerun with --prompt."
+            : "Missing: \(missing.joined(separator: ", ")). macOS grants these per-process to the parent. Grant to \"\(host)\" (not kagete) in System Settings → Privacy & Security. Or rerun with --prompt."
         try CLIOut.ok(command: "doctor", result: result, hint: hint)
         if !result.allGranted { throw ExitCode(1) }
     }
@@ -147,7 +154,7 @@ struct Inspect: AsyncParsableCommand {
     @Flag(name: .long, help: "With --tree: emit the full raw tree without pruning unlabeled AXUnknown nodes.")
     var full: Bool = false
 
-    @Flag(name: .long, help: "With --tree: include AX action names per node (extra IPC per element — slow on large trees).")
+    @Flag(name: .long, help: "With --tree: include AX action names per node. Adds one IPC per element and is slow on large trees.")
     var withActions: Bool = false
 
     func run() async throws {
@@ -178,7 +185,7 @@ struct Inspect: AsyncParsableCommand {
             maxDepth: maxDepth)
         let hint: String?
         if summary.actionableCount == 0 {
-            hint = "No AXPress/Increment/Decrement elements found — the window may use custom-drawn UI; consider Visual path (screenshot + coord click)."
+            hint = "No AXPress/Increment/Decrement elements found. The window may use custom-drawn UI; consider the Visual path (screenshot + coord click)."
         } else if summary.totalNodes > 200 {
             hint = "Large tree (\(summary.totalNodes) nodes). Use `kagete find` with --role/--title to drill in, or `inspect --tree` for the full dump."
         } else {
@@ -204,20 +211,8 @@ struct Find: AsyncParsableCommand {
     @Option(name: .long, help: "Exact AX subrole (e.g. AXCloseButton).")
     var subrole: String?
 
-    @Option(name: .long, help: "Exact title match.")
-    var title: String?
-
-    @Option(name: .long, help: "Substring of title (case-insensitive).")
-    var titleContains: String?
-
-    @Option(name: [.customLong("id"), .customLong("identifier")], help: "Exact AXIdentifier.")
-    var identifier: String?
-
-    @Option(name: .long, help: "Substring of AXDescription (case-insensitive).")
-    var descriptionContains: String?
-
-    @Option(name: .long, help: "Substring of AXValue (case-insensitive).")
-    var valueContains: String?
+    @Option(name: .long, help: "Case-insensitive substring matched across every label the element exposes (title, value, description, help, identifier). Use whichever phrase you'd read off the screen. kagete does not ask you to guess which field carries it.")
+    var textContains: String?
 
     @Flag(name: .long, help: "Only enabled elements.")
     var enabledOnly: Bool = false
@@ -255,13 +250,12 @@ struct Find: AsyncParsableCommand {
 
     private func runInner() throws {
         let criteria = FindCriteria(
-            role: role, subrole: subrole, title: title,
-            titleContains: titleContains, identifier: identifier,
-            descriptionContains: descriptionContains, valueContains: valueContains,
+            role: role, subrole: subrole,
+            textContains: textContains,
             enabledOnly: enabledOnly, disabledOnly: disabledOnly)
         guard criteria.hasAnyFilter else {
             throw KageteError.invalidArgument(
-                "No filters provided. Supply at least one of --role, --title, --title-contains, --id, etc.")
+                "No filters provided. Supply at least one of --role, --subrole, --text-contains, --enabled-only, --disabled-only.")
         }
         let resolved = try TargetResolver.resolve(target)
         let hits = try AXInspector.find(
@@ -284,13 +278,13 @@ struct Find: AsyncParsableCommand {
 
         let hint: String?
         if hits.isEmpty {
-            hint = "No matches. Try broader filters (--title-contains, --role) or `inspect` the window to survey what's there."
+            hint = "No matches. Broaden the query (drop --role, shorten --text-contains) or run `kagete inspect --tree` to survey what's there."
         } else if truncated {
             hint = "Hit --limit (\(limit)). Narrow with --enabled-only / --title-contains to see the rest."
         } else if hits.count == 1, hits[0].actions?.contains(kAXPressAction) == true {
-            hint = "One AXPress hit — pass its axPath to `kagete click --ax-path`."
+            hint = "One AXPress hit. Pass its axPath to `kagete press --ax-path`."
         } else if disabled > 0, !enabledOnly {
-            hint = "\(disabled) of \(hits.count) hits are AXDisabled — add --enabled-only to filter them out."
+            hint = "\(disabled) of \(hits.count) hits are AXDisabled. Add --enabled-only to filter them out."
         } else {
             hint = nil
         }
@@ -391,21 +385,393 @@ struct Screenshot: AsyncParsableCommand {
     }
 }
 
-struct Click: AsyncParsableCommand {
+// MARK: - AX semantic action primitives
+//
+// The following commands do exactly one thing at the AX layer each — no
+// activation, no cursor motion, no HID traffic, no fallback. They depend
+// only on the AX API being willing to dispatch the requested action or
+// write the requested attribute. Agents compose these with HID primitives
+// and `activate` as needed; the binary does not guess.
+
+/// `kagete press` — fire `kAXPressAction` on an element. No fallback to
+/// CGEvent; no auto-activate. If the element doesn't advertise AXPress,
+/// returns `AX_ACTION_UNSUPPORTED` with the list of actions the element
+/// *does* advertise, so the agent can pick the next primitive.
+struct Press: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "click",
-        abstract: "Click at a point or on an AX element.")
+        commandName: "press",
+        abstract: "Perform kAXPressAction on an element. No fallback, no activate.")
 
     @OptionGroup var target: TargetOptions
 
-    @Option(name: .long, help: "AX path of the element to click (preferred).")
-    var axPath: String?
+    @Option(name: .long, help: "AX path of the element to press.")
+    var axPath: String
+
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
+    struct PressResult: Codable {
+        let axPath: String
+        let role: String?
+        let title: String?
+        let actions: [String]
+    }
+
+    func run() async throws {
+        do { try await runInner() }
+        catch let err as KageteError {
+            try CLIOut.fail(
+                PressResult.self, command: "press",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        let resolved = try TargetResolver.resolve(target)
+        let el = try AXInspector.locate(
+            pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: axPath)
+        let b = AXInspector.bundle(for: el)
+        let actions = AXInspector.actionNames(el)
+
+        guard actions.contains(kAXPressAction) else {
+            throw KageteError.failure(
+                "AX action unsupported: element at \(axPath) (role=\(b.role ?? "?")) does not advertise AXPress. Advertised actions: \(actions.joined(separator: ", "))")
+        }
+
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(
+                at: nil, label: "press", app: resolved.app.localizedName)))
+        }
+
+        let status = AXInspector.performActionRaw(el, action: kAXPressAction)
+        guard status == .success else {
+            throw KageteError.failure(
+                "AX action failed on \(axPath) (AXError \(status.rawValue)). The element advertised AXPress but the app rejected the call.")
+        }
+
+        let result = PressResult(
+            axPath: axPath, role: b.role, title: b.title, actions: actions)
+        try CLIOut.ok(
+            command: "press",
+            target: TargetJSON(resolved: resolved),
+            result: result)
+    }
+}
+
+/// `kagete action` — generic AX action dispatcher. Allowlist of well-known
+/// names; anything else is `INVALID_ARGUMENT`. Same contract as `press`:
+/// probe first via `actionNames`, then fire. No fallback.
+struct Action: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "action",
+        abstract: "Perform a named AX action (AXShowMenu, AXIncrement, AXDecrement, AXPick, AXConfirm, AXCancel).")
+
+    /// Whitelist keeps the surface well-defined. `press` and `scroll-to`
+    /// are their own verbs so they don't need to appear here.
+    static let allowed: Set<String> = [
+        "AXShowMenu", "AXIncrement", "AXDecrement",
+        "AXPick", "AXConfirm", "AXCancel",
+    ]
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "AX path of the element to act on.")
+    var axPath: String
+
+    @Option(name: .long, help: "Action name (e.g. AXShowMenu).")
+    var name: String
+
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
+    struct ActionResult: Codable {
+        let axPath: String
+        let role: String?
+        let title: String?
+        let action: String
+        let actions: [String]
+    }
+
+    func run() async throws {
+        do { try await runInner() }
+        catch let err as KageteError {
+            try CLIOut.fail(
+                ActionResult.self, command: "action",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        guard Self.allowed.contains(name) else {
+            throw KageteError.invalidArgument(
+                "Unknown action \"\(name)\". Allowed: \(Self.allowed.sorted().joined(separator: ", ")). Use `kagete press` for AXPress and `kagete scroll-to` for AXScrollToVisible.")
+        }
+
+        let resolved = try TargetResolver.resolve(target)
+        let el = try AXInspector.locate(
+            pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: axPath)
+        let b = AXInspector.bundle(for: el)
+        let actions = AXInspector.actionNames(el)
+
+        guard actions.contains(name) else {
+            throw KageteError.failure(
+                "AX action unsupported: element at \(axPath) (role=\(b.role ?? "?")) does not advertise \(name). Advertised actions: \(actions.joined(separator: ", "))")
+        }
+
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(
+                at: nil, label: name, app: resolved.app.localizedName)))
+        }
+
+        let status = AXInspector.performActionRaw(el, action: name)
+        guard status == .success else {
+            throw KageteError.failure(
+                "AX action failed on \(axPath) for \(name) (AXError \(status.rawValue)).")
+        }
+
+        let result = ActionResult(
+            axPath: axPath, role: b.role, title: b.title,
+            action: name, actions: actions)
+        try CLIOut.ok(
+            command: "action",
+            target: TargetJSON(resolved: resolved),
+            result: result)
+    }
+}
+
+/// `kagete focus` — set `kAXFocusedAttribute = true`. Replaces the hidden
+/// `ensureTextFocus` call that `type` used to do. Agent calls this
+/// explicitly before PID-targeted typing when needed.
+struct Focus: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "focus",
+        abstract: "Set kAXFocusedAttribute = true on an element.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "AX path of the element to focus.")
+    var axPath: String
+
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
+    struct FocusResult: Codable {
+        let axPath: String
+        let role: String?
+        let title: String?
+    }
+
+    func run() async throws {
+        do { try await runInner() }
+        catch let err as KageteError {
+            try CLIOut.fail(
+                FocusResult.self, command: "focus",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        let resolved = try TargetResolver.resolve(target)
+        let el = try AXInspector.locate(
+            pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: axPath)
+        let b = AXInspector.bundle(for: el)
+
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(
+                at: nil, label: "focus", app: resolved.app.localizedName)))
+        }
+
+        let status = AXInspector.setFocused(el)
+        guard status == .success else {
+            throw KageteError.failure(
+                "AX focus failed on \(axPath) (AXError \(status.rawValue)). The element rejected kAXFocusedAttribute. Common on read-only labels, custom NSViews, or web content routed through the DOM.")
+        }
+
+        // Settle window. `AXUIElementSetAttributeValue(kAXFocusedAttribute)`
+        // is acknowledged synchronously but the app's responder-chain
+        // install is async — Chromium / Electron / DOM-backed fields all
+        // route focus through their own event loop and need several
+        // turns before keystrokes route to the new first responder. If
+        // we return before that lands, a following `kagete type --app …`
+        // drops the first characters (or the whole payload).
+        //
+        // This keeps `focus` a single-step primitive from the agent's
+        // POV — "when this returns, focus is installed" — without
+        // embedding a fallback or conditional branch.
+        usleep(120_000)
+
+        try CLIOut.ok(
+            command: "focus",
+            target: TargetJSON(resolved: resolved),
+            result: FocusResult(axPath: axPath, role: b.role, title: b.title))
+    }
+}
+
+/// `kagete scroll-to` — perform `AXScrollToVisible`. Semantic scroll,
+/// no wheel events, no cursor motion. Only works on elements whose parent
+/// scroll area advertises the action.
+struct ScrollTo: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "scroll-to",
+        abstract: "Perform AXScrollToVisible on an element.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "AX path of the element to scroll into view.")
+    var axPath: String
+
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
+    struct ScrollToResult: Codable {
+        let axPath: String
+        let role: String?
+        let title: String?
+    }
+
+    func run() async throws {
+        do { try await runInner() }
+        catch let err as KageteError {
+            try CLIOut.fail(
+                ScrollToResult.self, command: "scroll-to",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        let resolved = try TargetResolver.resolve(target)
+        let el = try AXInspector.locate(
+            pid: resolved.pid, windowFilter: resolved.windowFilter, axPath: axPath)
+        let b = AXInspector.bundle(for: el)
+        let actions = AXInspector.actionNames(el)
+
+        guard actions.contains("AXScrollToVisible") else {
+            throw KageteError.failure(
+                "AX action unsupported: element at \(axPath) (role=\(b.role ?? "?")) does not advertise AXScrollToVisible. Advertised actions: \(actions.joined(separator: ", "))")
+        }
+
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(
+                at: nil, label: "scroll-to", app: resolved.app.localizedName)))
+        }
+
+        let status = AXInspector.performActionRaw(el, action: "AXScrollToVisible")
+        guard status == .success else {
+            throw KageteError.failure(
+                "AX action failed on \(axPath) for AXScrollToVisible (AXError \(status.rawValue)).")
+        }
+
+        try CLIOut.ok(
+            command: "scroll-to",
+            target: TargetJSON(resolved: resolved),
+            result: ScrollToResult(axPath: axPath, role: b.role, title: b.title))
+    }
+}
+
+// MARK: - App control
+
+/// `kagete activate` — standalone activation primitive. No `.auto` fallback:
+/// the agent picks `--method app` (NSRunningApplication.activate),
+/// `--method ax` (AX frontmost + raise), or `--method both`. Default is
+/// `app` — the classic path that most agents expect.
+struct Activate: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "activate",
+        abstract: "Bring the target app to the foreground.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "Activation method: app | ax | both.")
+    var method: String = "app"
+
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
+    struct ActivateResult: Codable {
+        let method: String
+        let frontmostAfterPid: Int32?
+        let frontmostAfterName: String?
+        let changed: Bool
+    }
+
+    func run() async throws {
+        do { try await runInner() }
+        catch let err as KageteError {
+            try CLIOut.fail(
+                ActivateResult.self, command: "activate",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        guard let m = Activator.Method(rawValue: method.lowercased()) else {
+            throw KageteError.invalidArgument("Unknown --method \(method). Use app, ax, or both.")
+        }
+        // `--method app` is window-unaware: `NSRunningApplication.activate()`
+        // brings the whole app forward and whichever window was most
+        // recently active takes focus. Agents that supplied `--window` in
+        // good faith would silently get the wrong one. Only `ax` / `both`
+        // route `windowFilter` through `AXRaise.raise(pid:windowFilter:)`,
+        // so reject the mismatch rather than pretend we honored the flag.
+        if m == .app, target.window != nil {
+            throw KageteError.invalidArgument(
+                "--window is ignored by --method app (NSRunningApplication.activate() is window-unaware). Use --method ax or --method both to raise a specific window.")
+        }
+        let resolved = try TargetResolver.resolve(target)
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(
+                at: nil, label: "activate", app: resolved.app.localizedName)))
+        }
+        // Compare by PID, not by `localizedName`. With a second instance
+        // of the same app already frontmost (classic `open -n` scenario),
+        // the name matches the target even though the requested process
+        // never came forward. PID is the authoritative identity.
+        let beforePid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        try await Activator.activateExplicit(resolved, method: m)
+        let afterApp = NSWorkspace.shared.frontmostApplication
+        let afterPid = afterApp?.processIdentifier
+        let afterName = afterApp?.localizedName
+        let changed = afterPid != beforePid
+
+        if afterPid != resolved.pid {
+            throw KageteError.failure(
+                "Activate failed: target pid \(resolved.pid) (\(resolved.app.localizedName ?? "?")) is not frontmost after activation (frontmost pid=\(afterPid.map { String($0) } ?? "?"), name=\(afterName ?? "?")).")
+        }
+
+        try CLIOut.ok(
+            command: "activate",
+            target: TargetJSON(resolved: resolved),
+            result: ActivateResult(
+                method: m.rawValue,
+                frontmostAfterPid: afterPid,
+                frontmostAfterName: afterName,
+                changed: changed))
+    }
+}
+
+// MARK: - HID primitives (cursor/keyboard synthesis)
+
+/// `kagete click-at` — synthesize a click at exact screen coords. Nothing
+/// else happens: no cursor warp, no activate, no AX lookup. Use `move`
+/// first if the target depends on prior pointer motion. Use `activate`
+/// first if the target refuses to accept clicks while backgrounded.
+struct ClickAt: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "click-at",
+        abstract: "Synthesize a CGEvent click at (x, y). No warp, no activate.")
+
+    @OptionGroup var target: TargetOptions
 
     @Option(name: .long, help: "Absolute x coordinate in screen points.")
-    var x: Double?
+    var x: Double
 
     @Option(name: .long, help: "Absolute y coordinate in screen points.")
-    var y: Double?
+    var y: Double
 
     @Option(name: .long, help: "Mouse button: left (default), right, middle.")
     var button: String = "left"
@@ -413,43 +779,20 @@ struct Click: AsyncParsableCommand {
     @Option(name: .long, help: "Click count (1 single, 2 double, etc.).")
     var count: Int = 1
 
-    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before clicking.")
-    var activate: Bool = true
-
-    @Flag(name: .long, help: "Skip the overlay pulse for this command.")
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
 
-    @Flag(name: .long, help: "Force CGEvent click even when the element advertises AXPress.")
-    var noAxPress: Bool = false
-
-    @Flag(name: .long, help: "Print only a terse one-line summary on success instead of the JSON envelope.")
-    var text: Bool = false
-
-    struct ClickResult: Codable {
-        let method: String
+    struct ClickAtResult: Codable {
         let button: String
         let count: Int
         let point: PointJSON
-        let element: ElementSummary?
-
-        struct ElementSummary: Codable {
-            let axPath: String
-            let role: String?
-            let title: String?
-            let actions: [String]
-        }
-    }
-
-    static func shouldResolveTarget(axPath: String?, target: TargetOptions, activate: Bool) -> Bool {
-        axPath != nil || (activate && target.hasAppSelector)
     }
 
     func run() async throws {
-        do {
-            try await runInner()
-        } catch let err as KageteError {
+        do { try await runInner() }
+        catch let err as KageteError {
             try CLIOut.fail(
-                ClickResult.self, command: "click",
+                ClickAtResult.self, command: "click-at",
                 target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
                 error: err)
         }
@@ -459,128 +802,76 @@ struct Click: AsyncParsableCommand {
         guard let mb = MouseButton(rawValue: button.lowercased()) else {
             throw KageteError.invalidArgument("Unknown --button \(button). Use left/right/middle.")
         }
-
-        let point: CGPoint
-        let resolvedTarget = Self.shouldResolveTarget(
-            axPath: axPath,
-            target: target,
-            activate: activate) ? try TargetResolver.resolve(target) : nil
-        let appLabel = resolvedTarget?.app.localizedName
-        var element: AXUIElement? = nil
-        var elementBundle: AXBundle? = nil
-        var elementActions: [String] = []
-        if let ax = axPath {
-            guard let resolvedTarget else {
-                throw KageteError.failure("Internal error: missing resolved target for AX click.")
-            }
-            try await Activator.activate(resolvedTarget)
-            let el = try AXInspector.locate(
-                pid: resolvedTarget.pid, windowFilter: resolvedTarget.windowFilter, axPath: ax)
-            element = el
-            elementBundle = AXInspector.bundle(for: el)
-            elementActions = AXInspector.actionNames(el)
-            guard let center = AXInspector.screenCenter(of: el) else {
-                throw KageteError.failure("Element at \(ax) has no resolvable frame.")
-            }
-            point = center
-        } else if let cx = x, let cy = y {
-            if activate, let resolvedTarget {
-                try await Activator.activate(resolvedTarget)
-            }
-            point = CGPoint(x: cx, y: cy)
-        } else {
-            throw KageteError.invalidArgument("Provide --ax-path (with --app/--bundle/--pid) or --x/--y.")
-        }
-
+        try target.assertNoWindowFilter(command: "click-at")
+        let resolved: ResolvedTarget? = target.hasAppSelector
+            ? try TargetResolver.resolve(target) : nil
+        let point = CGPoint(x: x, y: y)
         if !noOverlay {
             OverlayClient.notify(.pulse(.init(
-                at: PointJSON(x: Double(point.x), y: Double(point.y)),
+                at: PointJSON(x: x, y: y),
                 label: count > 1 ? "click×\(count)" : "click",
-                app: appLabel)))
+                app: resolved?.app.localizedName)))
         }
-
-        // AXPress is a single-activation primitive — it doesn't express button
-        // type or click count, so we only take the AX path for a plain left
-        // single-click on a resolved element that advertises it.
-        let canAxPress = !noAxPress && mb == .left && count == 1
-            && element != nil && elementActions.contains(kAXPressAction)
-
-        let method: String
-        if canAxPress, let el = element {
-            let status = AXUIElementPerformAction(el, kAXPressAction as CFString)
-            if status == .success {
-                method = "ax-press"
-            } else {
-                try Input.click(at: point, button: mb, count: count)
-                method = "cg-event-fallback"
-            }
-        } else {
-            try Input.click(at: point, button: mb, count: count)
-            method = "cg-event"
-        }
-
-        let result = ClickResult(
-            method: method,
-            button: mb.rawValue,
-            count: count,
-            point: PointJSON(x: Double(point.x), y: Double(point.y)),
-            element: axPath.map { path in
-                ClickResult.ElementSummary(
-                    axPath: path,
-                    role: elementBundle?.role,
-                    title: elementBundle?.title,
-                    actions: elementActions)
-            })
-
-        let verify = buildVerify()
-        let hint = buildHint(method: method)
-
-        if text {
-            print("click: \(method) @ (\(Int(point.x)),\(Int(point.y)))")
-            return
-        }
-
+        try Input.click(at: point, button: mb, count: count, toPid: resolved?.pid)
         try CLIOut.ok(
-            command: "click",
-            target: resolvedTarget.map { TargetJSON(resolved: $0) },
-            result: result, verify: verify, hint: hint)
-    }
-
-    // Click verify intentionally reports cursor only. App-level keyboard
-    // focus (AXFocusedUIElement) is unrelated to "what was clicked":
-    // buttons usually don't take focus, so the field surfaces whatever
-    // sidebar/list happened to hold focus before the click and misleads
-    // the agent into reasoning about an unrelated element. Use `find` /
-    // `inspect` / `screenshot` if you need to verify the click target
-    // itself.
-    private func buildVerify() -> VerifyJSON? {
-        let cursor = CGEvent(source: nil).map {
-            PointJSON(x: Double($0.location.x), y: Double($0.location.y))
-        }
-        return VerifyJSON(focusedAxPath: nil, focusedRole: nil,
-                          focusedTitle: nil, cursor: cursor)
-    }
-
-    private func buildHint(method: String) -> String? {
-        if method == "cg-event-fallback" {
-            return "Element advertised AXPress but it failed — UI may have intercepted the event."
-        }
-        return nil
+            command: "click-at",
+            target: resolved.map { TargetJSON(resolved: $0) },
+            result: ClickAtResult(
+                button: mb.rawValue, count: count,
+                point: PointJSON(x: x, y: y)))
     }
 }
 
+/// `kagete move` — cursor warp to (x, y). No click, no drag. Pure primitive.
+struct Move: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "move",
+        abstract: "Warp the cursor to (x, y).")
+
+    @Option(name: .long, help: "Absolute x coordinate in screen points.")
+    var x: Double
+
+    @Option(name: .long, help: "Absolute y coordinate in screen points.")
+    var y: Double
+
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
+    struct MoveResult: Codable {
+        let point: PointJSON
+    }
+
+    func run() async throws {
+        do {
+            if !noOverlay {
+                OverlayClient.notify(.pulse(.init(
+                    at: PointJSON(x: x, y: y), label: "move", app: nil)))
+            }
+            try Input.move(to: CGPoint(x: x, y: y))
+            try CLIOut.ok(
+                command: "move",
+                result: MoveResult(point: PointJSON(x: x, y: y)))
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                MoveResult.self, command: "move", error: err)
+        }
+    }
+}
+
+/// `kagete type` — synthesize Unicode text. No auto-activate, no auto-focus.
+/// The agent calls `activate` / `focus` explicitly beforehand when needed.
+/// When a target is resolved (`--app` / `--bundle` / `--pid`), events route
+/// through `CGEvent.postToPid` so they reach only that process; otherwise
+/// they go through the global HID tap ("type into whoever has focus").
 struct TypeText: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "type",
-        abstract: "Type a string into the focused element.")
+        abstract: "Synthesize Unicode text. No activate, no focus; agent sequences those explicitly.")
 
     @OptionGroup var target: TargetOptions
 
     @Argument(help: "Text to type.")
     var text: String
-
-    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before typing (if one is specified).")
-    var activate: Bool = true
 
     @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
@@ -601,40 +892,20 @@ struct TypeText: AsyncParsableCommand {
     }
 
     private func runInner() async throws {
-        var resolved: ResolvedTarget? = nil
-        if target.hasAppSelector {
-            resolved = try TargetResolver.resolve(target)
-            if activate, let r = resolved {
-                try await Activator.activate(r)
-            }
-        }
-        // Auto-focus pass: a synthesized click moves the cursor visually
-        // but doesn't always install first responder — common on
-        // Electron, custom NSViews, and any UI whose mouseDown handler
-        // doesn't call makeFirstResponder. If the app's currently
-        // focused element isn't a known text input, ask AX for the
-        // element under the cursor and try to focus it. Best-effort:
-        // a no-op when AX can't help (web inputs, locked-down apps).
-        if let r = resolved {
-            if AXInspector.ensureTextFocus(pid: r.pid) {
-                // Let the app's focus-changed handler run. Chromium /
-                // Electron route focus through the DOM event loop and
-                // need a few turns before keystrokes land in the new
-                // input. Without this, the first chars often go to
-                // /dev/null.
-                usleep(120_000)
-            }
-        }
+        try target.assertNoWindowFilter(command: "type")
+        let resolved: ResolvedTarget? = target.hasAppSelector
+            ? try TargetResolver.resolve(target) : nil
+
         // Snapshot the target element *before* typing. We re-read its
-        // AXValue post-type to confirm the keystrokes actually landed —
-        // the only reliable signal, since AXFocusedUIElement can move
-        // during typing (submit-on-enter, autocomplete stealing focus).
+        // AXValue post-type to confirm the keystrokes actually landed,
+        // since AXFocusedUIElement can move during typing (submit-on-
+        // enter, autocomplete stealing focus).
         let preSnapshot = resolved.flatMap { AXInspector.focusedSnapshot(pid: $0.pid) }
 
         if !noOverlay {
             OverlayClient.notify(.pulse(.init(at: nil, label: "type", app: resolved?.app.localizedName)))
         }
-        try Input.type(text)
+        try Input.type(text, toPid: resolved?.pid)
 
         let verify: VerifyJSON?
         let hint: String?
@@ -680,33 +951,142 @@ struct TypeText: AsyncParsableCommand {
             // No snapshot = no focused element at start = nothing to diff.
             // Still worth flagging when nothing is focused post-type either.
             if postFocus?.role == nil {
-                return "No focused element observed — text likely went nowhere. Click into an input first."
+                return "No focused element observed; text likely went nowhere. Call `kagete focus --ax-path …` first."
             }
             return nil
         }
         if tc.textLanded { return nil }
         if !tc.focusStable {
-            return "Focus moved during type (role \(tc.preRole ?? "?") → \(tc.postRole ?? "?")) — common for submit-on-enter / autocomplete stealing focus. Check the new target state."
+            return "Focus moved during type (role \(tc.preRole ?? "?") → \(tc.postRole ?? "?")). Common on submit-on-enter or autocomplete stealing focus. Check the new target state."
         }
         if tc.valueChanged {
-            return "Target value changed but does not contain the typed text — the app may have transformed, truncated, or auto-corrected the input."
+            return "Target value changed but does not contain the typed text. The app may have transformed, truncated, or auto-corrected the input."
         }
-        return "Target value did not change — keystrokes likely didn't land in the focused element (custom-drawn input that doesn't surface AXValue, or a read-only field)."
+        return "Target value did not change. Keystrokes likely didn't land in the focused element (custom-drawn input that doesn't surface AXValue, or a read-only field)."
     }
 }
 
+/// Background-capable text writer. `type` synthesizes HID keystrokes and
+/// therefore requires the target app to hold keyboard focus — unavoidable
+/// focus theft from whatever the user was doing. `set-value` takes the AX
+/// attribute path instead: `AXUIElementSetAttributeValue(kAXValueAttribute)`
+/// writes straight into the element's backing store, so the user's frontmost
+/// app keeps focus, the cursor does not move, and no keyboard events leak.
+/// Trade-off: only works on elements whose `AXValue` is settable — plain
+/// text fields, text areas, search fields, sometimes combo boxes. Custom
+/// web inputs / Electron DOM fields route through the DOM event loop and
+/// ignore this path; fall back to click + type there.
+struct SetValue: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "set-value",
+        abstract: "Write text into an AX element without stealing focus. Background alternative to focus + type.")
+
+    @OptionGroup var target: TargetOptions
+
+    @Option(name: .long, help: "AX path of the element to write.")
+    var axPath: String
+
+    @Argument(help: "Text to set as the element's AXValue.")
+    var text: String
+
+    @Flag(name: .long, help: "Skip the awareness overlay for this command.")
+    var noOverlay: Bool = false
+
+    @Flag(name: .long, help: "Print only a terse one-line summary on success instead of the JSON envelope.")
+    var textOutput: Bool = false
+
+    struct SetValueResult: Codable {
+        let axPath: String
+        let role: String?
+        let title: String?
+        let length: Int
+        let valueSet: Bool
+        let valueMatches: Bool
+        let preValue: String?
+        let postValue: String?
+    }
+
+    func run() async throws {
+        do {
+            try await runInner()
+        } catch let err as KageteError {
+            try CLIOut.fail(
+                SetValueResult.self, command: "set-value",
+                target: (try? TargetResolver.resolve(target)).map { TargetJSON(resolved: $0) },
+                error: err)
+        }
+    }
+
+    private func runInner() async throws {
+        let resolvedTarget = try TargetResolver.resolve(target)
+
+        let el = try AXInspector.locate(
+            pid: resolvedTarget.pid,
+            windowFilter: resolvedTarget.windowFilter,
+            axPath: axPath)
+        let elementBundle = AXInspector.bundle(for: el)
+        let preValue = AXInspector.currentValue(of: el)
+
+        guard AXInspector.isAttributeSettable(el, attribute: kAXValueAttribute) else {
+            throw KageteError.failure(
+                "AX value not settable on \(axPath) (role=\(elementBundle.role ?? "?")). The element does not expose a writable AXValue. Use `focus` + `type`, or pick a different axPath that targets the inner text input.")
+        }
+
+        if !noOverlay {
+            OverlayClient.notify(.pulse(.init(
+                at: nil,
+                label: "set-value",
+                app: resolvedTarget.app.localizedName)))
+        }
+
+        let err = AXInspector.setStringValue(el, to: text)
+        guard err == .success else {
+            throw KageteError.failure(
+                "AX write failed on \(axPath) (AXError \(err.rawValue)). The element advertises a writable AXValue but the app rejected the write. Common on validated fields or inputs that require real user interaction.")
+        }
+
+        let postValue = AXInspector.currentValue(of: el)
+        let valueMatches = postValue == text
+
+        let result = SetValueResult(
+            axPath: axPath,
+            role: elementBundle.role,
+            title: elementBundle.title,
+            length: text.count,
+            valueSet: true,
+            valueMatches: valueMatches,
+            preValue: preValue,
+            postValue: postValue)
+        let hint: String? = valueMatches
+            ? nil
+            : "Write succeeded at the AX layer but the element's post-value differs from the input. The app may have reformatted, truncated, or silently ignored the write (common for fields that require a companion key event to commit)."
+
+        if textOutput {
+            let state = valueMatches ? "matched" : "mismatch"
+            print("set-value: wrote \(text.count) chars to \(axPath): \(state)")
+            return
+        }
+
+        try CLIOut.ok(
+            command: "set-value",
+            target: TargetJSON(resolved: resolvedTarget),
+            result: result, verify: nil, hint: hint)
+    }
+}
+
+/// `kagete key` — synthesize a single key combo. No auto-activate; agent
+/// calls `activate` first when the combo routes through the app's menu
+/// bar (NSMenu shortcuts usually require frontmost). PID-targeted when a
+/// target is resolved, HID tap otherwise.
 struct Key: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "key",
-        abstract: "Send a keyboard combo, e.g. cmd+s, shift+tab, f12.")
+        abstract: "Send a keyboard combo, e.g. cmd+s, shift+tab, f12. No activate.")
 
     @OptionGroup var target: TargetOptions
 
     @Argument(help: "Key combo, e.g. \"cmd+shift+4\".")
     var combo: String
-
-    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before sending (if one is specified).")
-    var activate: Bool = true
 
     @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
@@ -728,18 +1108,14 @@ struct Key: AsyncParsableCommand {
     }
 
     private func runInner() async throws {
-        var resolved: ResolvedTarget? = nil
-        if target.hasAppSelector {
-            resolved = try TargetResolver.resolve(target)
-            if activate, let r = resolved {
-                try await Activator.activate(r)
-            }
-        }
+        try target.assertNoWindowFilter(command: "key")
+        let resolved: ResolvedTarget? = target.hasAppSelector
+            ? try TargetResolver.resolve(target) : nil
         if !noOverlay {
             OverlayClient.notify(.pulse(.init(at: nil, label: "key \(combo)", app: resolved?.app.localizedName)))
         }
         let parsed = try KeyCodes.parse(combo)
-        try Input.key(parsed)
+        try Input.key(parsed, toPid: resolved?.pid)
 
         let verify = resolved.map { r -> VerifyJSON in
             let f = AXInspector.focusedSummary(pid: r.pid)
@@ -770,9 +1146,6 @@ struct Scroll: AsyncParsableCommand {
     @Flag(name: .long, help: "Use pixel units instead of line units.")
     var pixels: Bool = false
 
-    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app before scrolling (if one is specified).")
-    var activate: Bool = true
-
     @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
 
@@ -794,13 +1167,9 @@ struct Scroll: AsyncParsableCommand {
     }
 
     private func runInner() async throws {
-        var resolved: ResolvedTarget? = nil
-        if target.hasAppSelector {
-            resolved = try TargetResolver.resolve(target)
-            if activate, let r = resolved {
-                try await Activator.activate(r)
-            }
-        }
+        try target.assertNoWindowFilter(command: "scroll")
+        let resolved: ResolvedTarget? = target.hasAppSelector
+            ? try TargetResolver.resolve(target) : nil
         if !noOverlay {
             OverlayClient.notify(.pulse(.init(at: nil, label: "scroll", app: resolved?.app.localizedName)))
         }
@@ -847,9 +1216,6 @@ struct Drag: AsyncParsableCommand {
     @Option(name: .long, help: "Modifier flags, e.g. \"shift\" or \"cmd+alt\".")
     var mod: String = ""
 
-    @Flag(name: .long, inversion: .prefixedNo, help: "Activate the target app first.")
-    var activate: Bool = true
-
     @Flag(name: .long, help: "Skip the awareness overlay for this command.")
     var noOverlay: Bool = false
 
@@ -882,13 +1248,8 @@ struct Drag: AsyncParsableCommand {
             }
         }
 
-        var resolved: ResolvedTarget? = nil
-        if hasTargetFlags {
-            resolved = try TargetResolver.resolve(target)
-            if activate, let r = resolved {
-                try await Activator.activate(r)
-            }
-        }
+        let resolved: ResolvedTarget? = hasTargetFlags
+            ? try TargetResolver.resolve(target) : nil
 
         let start = try resolvePoint(
             axPath: fromAxPath, x: fromX, y: fromY, resolved: resolved, label: "source")
@@ -946,7 +1307,7 @@ struct Drag: AsyncParsableCommand {
 struct Release: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "release",
-        abstract: "Tell the awareness overlay the agent is done — shows ✓ and returns control.")
+        abstract: "Tell the awareness overlay the agent is done. Shows ✓ and returns control.")
 
     @Argument(help: "Optional label to show instead of \"control returned\".")
     var label: String = "control returned"
@@ -1011,7 +1372,7 @@ struct Raise: AsyncParsableCommand {
 
         let hint: String? = report.changedFocus
             ? nil
-            : "AX raise did not change focus — another app may be holding it (e.g. CleanShot X recorder). Try --no-activate=false on the next action."
+            : "AX raise did not change focus. Another app may be holding it (e.g. CleanShot X recorder). Retry `activate --method both`."
         try CLIOut.ok(
             command: "raise",
             target: TargetJSON(resolved: resolved),
@@ -1058,7 +1419,7 @@ struct OverlayStop: AsyncParsableCommand {
 struct OverlayDaemonEntry: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "_overlay-daemon",
-        abstract: "Internal — the overlay helper process (not for direct use).",
+        abstract: "Internal. The overlay helper process (not for direct use).",
         shouldDisplay: false)
 
     func run() async throws {
