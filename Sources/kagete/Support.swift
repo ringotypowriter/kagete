@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import ArgumentParser
+import Darwin
 import Foundation
 
 enum KageteError: Error, CustomStringConvertible {
@@ -41,14 +42,18 @@ enum Permissions {
 
     @discardableResult
     static func promptAccessibility() -> Bool {
-        // String literal value of kAXTrustedCheckOptionPrompt — avoids Swift 6
-        // concurrency diagnostic on the imported C global.
         return AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
 
     @discardableResult
     static func promptScreenRecording() -> Bool {
         CGRequestScreenCaptureAccess()
+    }
+
+    @MainActor
+    static func guiPrompt(accessibility: Bool, screenRecording: Bool) {
+        guard !accessibility || !screenRecording else { return }
+        PermissionGuide.show(accessibility: accessibility, screenRecording: screenRecording)
     }
 
     /// Name of the process that launched kagete — the terminal, IDE, or
@@ -59,29 +64,42 @@ enum Permissions {
     /// (Ghostty / iTerm / Terminal / Claude Code / Codex / …). Returns
     /// nil if the parent name can't be read.
     static var hostProcessName: String? {
-        let ppid = getppid()
-        let proc = Process()
-        proc.launchPath = "/bin/ps"
-        proc.arguments = ["-o", "comm=", "-p", "\(ppid)"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return nil }
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let full = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !full.isEmpty else { return nil }
-        // `ps -o comm=` returns the full path on macOS. Take the basename
-        // and strip the `.app/Contents/MacOS/...` tail so "Ghostty.app
-        // /Contents/MacOS/ghostty" becomes "Ghostty".
-        if let appRange = full.range(of: ".app/") {
-            let appPath = String(full[..<appRange.upperBound].dropLast())
-            return (appPath as NSString).lastPathComponent
-                .replacingOccurrences(of: ".app", with: "")
+        var pid = getppid()
+        var fallback: String?
+        for _ in 0..<10 {
+            guard pid > 1 else { break }
+            let path = pidPath(pid)
+            guard let p = path, !p.isEmpty else { break }
+            if fallback == nil {
+                fallback = (p as NSString).lastPathComponent
+            }
+            if let appRange = p.range(of: ".app/") {
+                let appPath = String(p[..<appRange.upperBound].dropLast())
+                return (appPath as NSString).lastPathComponent
+                    .replacingOccurrences(of: ".app", with: "")
+            }
+            pid = parentPid(of: pid) ?? 0
         }
-        return (full as NSString).lastPathComponent
+        return fallback
+    }
+
+    private static func pidPath(_ pid: pid_t) -> String? {
+        let buf = UnsafeMutablePointer<CChar>.allocate(capacity: Int(MAXPATHLEN))
+        defer { buf.deallocate() }
+        let len = proc_pidpath(pid, buf, UInt32(MAXPATHLEN))
+        guard len > 0 else { return nil }
+        return String(cString: buf)
+    }
+
+    private static func parentPid(of pid: pid_t) -> pid_t? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.size
+        let rc = sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0)
+        guard rc == 0, size > 0 else { return nil }
+        let ppid = info.kp_eproc.e_ppid
+        guard ppid > 0 else { return nil }
+        return ppid
     }
 
     /// Human-readable "where to grant permission" label, baked into error

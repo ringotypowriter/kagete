@@ -44,6 +44,9 @@ struct Doctor: AsyncParsableCommand {
     @Flag(name: .long, help: "Trigger the system permission prompts for any missing grants.")
     var prompt: Bool = false
 
+    @Flag(name: .long, help: "Show the prompt GUI even when all permissions are granted (for testing).")
+    var dryRun: Bool = false
+
     @Flag(name: .long, help: "Print a human-readable report instead of the JSON envelope.")
     var text: Bool = false
 
@@ -54,9 +57,12 @@ struct Doctor: AsyncParsableCommand {
     }
 
     func run() async throws {
-        if prompt {
-            if !Permissions.accessibility { Permissions.promptAccessibility() }
-            if !Permissions.screenRecording { Permissions.promptScreenRecording() }
+        if prompt || dryRun {
+            let ax = dryRun ? false : Permissions.accessibility
+            let sr = dryRun ? false : Permissions.screenRecording
+            if !ax || !sr {
+                await Permissions.guiPrompt(accessibility: ax, screenRecording: sr)
+            }
         }
 
         let ax = Permissions.accessibility
